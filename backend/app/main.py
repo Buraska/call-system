@@ -1,10 +1,12 @@
 from datetime import datetime, timezone
 from typing import Any
+import hashlib
 import logging
+import re
 import secrets
 
 from bson import ObjectId
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from jose import jwt
@@ -17,11 +19,14 @@ from .models import (BulkReply, LoginRequest, ManualReply, MessageUpdate, Notifi
                      OrganizationSettings, RegisterRequest, RuleCreate, RuleUpdate,
                      TagCreate, TagUpdate, WebPushSubscription, now_utc)
 from .security import create_access_token, current_user, hash_password, verify_password
-from .services import classify, delete_recording, notify, oid, run_actions, serialize, transcribe, send_message
+from .services import classify, delete_recording, notify, oid, run_actions, serialize, transcribe, transcribe_audio, send_message
+from .assistant import router as assistant_router
+from . import telegram
 
 logging.basicConfig(level=logging.INFO)
 app = FastAPI(title="Kontuur API", version="0.1.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=[settings.frontend_origin, "http://127.0.0.1:3000"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app.include_router(assistant_router)
 
 
 def public_user(user: dict) -> dict:
@@ -91,8 +96,8 @@ async def me(user: dict = Depends(current_user)):
 
 @app.get("/api/organization")
 async def get_organization(user: dict = Depends(current_user)):
-    return serialize(await org_for(user))
-
+    org = await org_for(user)
+    return serialize(org) | {"auto_reply_min_confidence": org.get("auto_reply_min_confidence", settings.auto_reply_min_confidence)}
 
 @app.patch("/api/organization")
 async def update_organization(body: OrganizationSettings, user: dict = Depends(current_user)):
@@ -107,7 +112,8 @@ async def update_organization(body: OrganizationSettings, user: dict = Depends(c
         except DuplicateKeyError:
             raise HTTPException(409, "Этот номер телефонии уже назначен другой организации")
     await db.organizations.update_one({"_id": ObjectId(user["organization_id"])}, {"$set": data})
-    return serialize(await org_for(user))
+    org = await org_for(user)
+    return serialize(org) | {"auto_reply_min_confidence": org.get("auto_reply_min_confidence", settings.auto_reply_min_confidence)}
 
 
 @app.get("/api/setup/forwarding")
@@ -208,8 +214,23 @@ async def update_rule(rule_id: str, body: RuleUpdate, user: dict = Depends(curre
     except ValueError:
         raise HTTPException(404, "Правило не найдено")
     data = body.model_dump(exclude_unset=True)
+    if "tag_id" in data:
+        try:
+            tag = await get_db().tags.find_one({
+                "_id": oid(data["tag_id"]),
+                "organization_id": user["organization_id"],
+                "archived": {"$ne": True},
+            }) if data["tag_id"] else None
+        except ValueError:
+            tag = None
+        if not tag:
+            raise HTTPException(404, "Тэг не найден")
+        data["tag_name"] = tag["name"]
     data["updated_at"] = now_utc()
-    result = await get_db().action_rules.update_one({"_id": rule_oid, "organization_id": user["organization_id"]}, {"$set": data})
+    result = await get_db().action_rules.update_one(
+        {"_id": rule_oid, "organization_id": user["organization_id"]},
+        {"$set": data},
+    )
     if not result.matched_count:
         raise HTTPException(404, "Правило не найдено")
     return serialize(await get_db().action_rules.find_one({"_id": rule_oid})) | {"id": rule_id}
@@ -332,6 +353,160 @@ async def mark_notification_read(notification_id: str, body: NotificationRead, u
     return {"ok": True}
 
 
+@app.post("/api/telegram/organization-code")
+async def create_telegram_organization_code(user: dict = Depends(current_user)):
+    if not settings.telegram_bot_token or not settings.telegram_bot_username or not settings.telegram_webhook_secret:
+        raise HTTPException(503, "Telegram bot is not configured")
+    code = secrets.token_urlsafe(18)
+    code_hash = hashlib.sha256(code.encode()).hexdigest()
+    await get_db().telegram_organization_codes.update_one(
+        {"organization_id": user["organization_id"]},
+        {"$set": {"organization_id": user["organization_id"], "code_hash": code_hash, "updated_at": now_utc()}},
+        upsert=True,
+    )
+    return {"code": code, "bot_url": f"https://t.me/{settings.telegram_bot_username}?start={code}"}
+
+
+@app.post("/webhooks/telegram")
+async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
+    if not settings.telegram_bot_token or not settings.telegram_webhook_secret:
+        raise HTTPException(503, "Telegram webhook is not configured")
+    if not secrets.compare_digest(request.headers.get("X-Telegram-Bot-Api-Secret-Token", ""), settings.telegram_webhook_secret):
+        raise HTTPException(403, "Invalid Telegram webhook secret")
+    update = await request.json()
+    message = update.get("message") or update.get("edited_message")
+    if not isinstance(message, dict):
+        return {"ok": True, "ignored": True}
+
+    chat = message.get("chat") or {}
+    if chat.get("type") != "private":
+        return {"ok": True, "ignored": True}
+    chat_id = str(chat.get("id", ""))
+    text = message.get("text", "")
+    if not chat_id:
+        return {"ok": True, "ignored": True}
+    db = get_db()
+    subscriber = await db.telegram_subscribers.find_one({"chat_id": chat_id})
+    command_parts = text.split(maxsplit=1) if text else []
+    command = command_parts[0].split("@", 1)[0] if command_parts else ""
+    if command == "/start":
+        if subscriber and subscriber.get("state") == "active":
+            await telegram.send_message(chat_id, f"Вы уже подписаны как {subscriber.get('name', 'пользователь')}. Отправьте голосовое сообщение.")
+            return {"ok": True}
+
+        start_payload = command_parts[1].strip() if len(command_parts) > 1 else ""
+        pending_code_hash = hashlib.sha256(start_payload.encode()).hexdigest() if start_payload else None
+        if pending_code_hash and not await db.telegram_organization_codes.find_one({"code_hash": pending_code_hash}):
+            await telegram.send_message(chat_id, "Ссылка для подписки недействительна или устарела. Попросите администратора создать новую.")
+            return {"ok": True, "status": "invalid_organization_code"}
+
+        if not subscriber:
+            record = {"chat_id": chat_id, "state": "awaiting_name", "created_at": now_utc(), "updated_at": now_utc()}
+            if pending_code_hash:
+                record["pending_organization_code_hash"] = pending_code_hash
+            try:
+                await db.telegram_subscribers.insert_one(record)
+            except DuplicateKeyError:
+                subscriber = await db.telegram_subscribers.find_one({"chat_id": chat_id})
+        else:
+            set_fields = {"state": "awaiting_name", "updated_at": now_utc()}
+            unset_fields = {"organization_id": "", "name": ""}
+            if pending_code_hash:
+                set_fields["pending_organization_code_hash"] = pending_code_hash
+            else:
+                unset_fields["pending_organization_code_hash"] = ""
+            await db.telegram_subscribers.update_one(
+                {"_id": subscriber["_id"]},
+                {"$set": set_fields, "$unset": unset_fields},
+            )
+        await telegram.send_message(chat_id, "Как к вам обращаться? Отправьте ваше имя.")
+        return {"ok": True, "status": "awaiting_name"}
+
+    if subscriber and subscriber.get("state") == "awaiting_name":
+        name = text.strip()
+        if not name or len(name) > 100:
+            await telegram.send_message(chat_id, "Введите имя длиной не более 100 символов.")
+            return {"ok": True, "status": "awaiting_name"}
+        pending_code_hash = subscriber.get("pending_organization_code_hash")
+        if pending_code_hash:
+            organization = await db.telegram_organization_codes.find_one({"code_hash": pending_code_hash})
+            if not organization:
+                await db.telegram_subscribers.update_one(
+                    {"_id": subscriber["_id"]},
+                    {"$set": {"name": name, "state": "awaiting_organization_code", "updated_at": now_utc()},
+                     "$unset": {"pending_organization_code_hash": ""}},
+                )
+                await telegram.send_message(chat_id, "Ссылка устарела. Введите актуальный код организации или попросите администратора прислать новую ссылку.")
+                return {"ok": True, "status": "awaiting_organization_code"}
+            org = await db.organizations.find_one({"_id": ObjectId(organization["organization_id"])})
+            await db.telegram_subscribers.update_one(
+                {"_id": subscriber["_id"]},
+                {"$set": {"name": name, "organization_id": organization["organization_id"], "state": "active", "updated_at": now_utc()},
+                 "$unset": {"pending_organization_code_hash": ""}},
+            )
+            await telegram.send_message(chat_id, f"Готово, {name}! Вы подписаны на {org.get('name', 'организацию')}. Отправляйте голосовые сообщения сюда.")
+            return {"ok": True, "status": "active"}
+
+        await db.telegram_subscribers.update_one(
+            {"_id": subscriber["_id"]},
+            {"$set": {"name": name, "state": "awaiting_organization_code", "updated_at": now_utc()}},
+        )
+        await telegram.send_message(chat_id, "Введите код организации, который вам выдал администратор.")
+        return {"ok": True, "status": "awaiting_organization_code"}
+
+    if subscriber and subscriber.get("state") == "awaiting_organization_code":
+        code_hash = hashlib.sha256(text.strip().encode()).hexdigest()
+        organization = await db.telegram_organization_codes.find_one({"code_hash": code_hash})
+        if not organization:
+            await telegram.send_message(chat_id, "Код организации не найден. Проверьте его и отправьте ещё раз.")
+            return {"ok": True, "status": "awaiting_organization_code"}
+        org = await db.organizations.find_one({"_id": ObjectId(organization["organization_id"])})
+        await db.telegram_subscribers.update_one(
+            {"_id": subscriber["_id"]},
+            {"$set": {"organization_id": organization["organization_id"], "state": "active", "updated_at": now_utc()}},
+        )
+        await telegram.send_message(chat_id, f"Готово, {subscriber['name']}! Вы подписаны на {org.get('name', 'организацию')}. Отправляйте голосовые сообщения сюда.")
+        return {"ok": True, "status": "active"}
+
+    audio = message.get("voice") or message.get("audio")
+    if not audio:
+        return {"ok": True, "ignored": True}
+    if not subscriber or subscriber.get("state") != "active":
+        if subscriber and subscriber.get("state") == "awaiting_name":
+            prompt = "Сначала отправьте ваше имя."
+        elif subscriber and subscriber.get("state") == "awaiting_organization_code":
+            prompt = "Сначала отправьте код организации."
+        else:
+            prompt = "Для подписки отправьте команду /start."
+        await telegram.send_message(chat_id, prompt)
+        return {"ok": True, "ignored": "not_subscribed"}
+    if int(audio.get("file_size", 0)) > telegram.MAX_TELEGRAM_AUDIO_BYTES:
+        await telegram.send_message(chat_id, "Аудиофайл превышает лимит 20 МБ.")
+        return {"ok": True, "rejected": "file_too_large"}
+    update_id = update.get("update_id")
+    provider_call_id = f"telegram:{update_id}" if update_id is not None else f"telegram:{message.get('message_id')}"
+    db = get_db()
+    if await db.calls.find_one({"provider_call_id": provider_call_id}):
+        return {"ok": True, "duplicate": True}
+    attachment_name = audio.get("file_name") or ("telegram-voice.ogg" if "voice" in message else "telegram-audio")
+    media_type = audio.get("mime_type") or ("audio/ogg" if "voice" in message else "audio/mpeg")
+    call = {"provider_call_id": provider_call_id, "organization_id": subscriber["organization_id"], "caller_phone": chat_id, "contact_name": subscriber["name"], "status": "processing", "source": "telegram", "created_at": now_utc(), "updated_at": now_utc()}
+    try:
+        inserted = await db.calls.insert_one(call)
+    except DuplicateKeyError:
+        return {"ok": True, "duplicate": True}
+    call["_id"] = inserted.inserted_id
+    try:
+        audio_bytes, file_path_name = await telegram.download_file(audio["file_id"])
+    except Exception as error:
+        await db.calls.update_one({"_id": call["_id"]}, {"$set": {"status": "failed", "processing_error": str(error)[:300], "updated_at": now_utc()}})
+        await telegram.send_message(chat_id, "Не удалось получить аудиофайл. Отправьте его ещё раз.")
+        return {"ok": True, "failed": "download"}
+    filename = attachment_name if "." in attachment_name else file_path_name
+    background_tasks.add_task(process_recording, call, "", "", str(audio.get("duration", 0)), audio_bytes, filename, media_type)
+    return {"ok": True, "status": "processing"}
+
+
 @app.post("/api/push/subscribe", status_code=201)
 async def push_subscribe(body: WebPushSubscription, user: dict = Depends(current_user)):
     await get_db().push_subscriptions.update_one({"organization_id": user["organization_id"], "subscription.endpoint": body.endpoint}, {"$set": {"organization_id": user["organization_id"], "subscription": body.model_dump(), "created_at": now_utc()}}, upsert=True)
@@ -407,6 +582,62 @@ async def twilio_complete(request: Request):
     return Response("<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response><Hangup/></Response>", media_type="application/xml")
 
 
+@app.post("/api/calls/simulate", status_code=201)
+async def simulate_call(
+    audio: UploadFile = File(...),
+    caller_phone: str = Form(...),
+    duration_seconds: float = Form(...),
+    user: dict = Depends(current_user),
+):
+    if not re.fullmatch(r"\+[1-9]\d{7,14}", caller_phone):
+        raise HTTPException(422, "Укажите номер звонившего в международном формате, например +37255551234")
+    if not 0 < duration_seconds <= 120:
+        raise HTTPException(422, "Длительность записи должна быть от 1 до 120 секунд")
+
+    media_type = (audio.content_type or "").split(";", 1)[0].lower()
+    file_details = {
+        "audio/webm": ("simulated-call.webm", "audio/webm"),
+        "audio/mp4": ("simulated-call.mp4", "audio/mp4"),
+        "audio/mpeg": ("simulated-call.mp3", "audio/mpeg"),
+        "audio/wav": ("simulated-call.wav", "audio/wav"),
+        "audio/x-wav": ("simulated-call.wav", "audio/wav"),
+        "audio/ogg": ("simulated-call.ogg", "audio/ogg"),
+    }
+    if media_type not in file_details:
+        raise HTTPException(415, "Поддерживаются аудиозаписи WebM, MP4, MP3, WAV и OGG")
+    audio_bytes = await audio.read(25 * 1024 * 1024 + 1)
+    await audio.close()
+    if not audio_bytes:
+        raise HTTPException(422, "Аудиозапись пустая")
+    if len(audio_bytes) > 25 * 1024 * 1024:
+        raise HTTPException(413, "Размер записи не должен превышать 25 МБ")
+
+    now = now_utc()
+    call = {
+        "provider_call_id": f"SIM{secrets.token_hex(16)}",
+        "organization_id": user["organization_id"],
+        "caller_phone": caller_phone,
+        "status": "processing",
+        "source": "simulated",
+        "created_at": now,
+        "updated_at": now,
+    }
+    result = await get_db().calls.insert_one(call)
+    call["_id"] = result.inserted_id
+    filename, content_type = file_details[media_type]
+    await process_recording(
+        call, "", "", str(int(duration_seconds)),
+        audio_bytes=audio_bytes,
+        audio_filename=filename,
+        audio_content_type=content_type,
+    )
+    completed_call = await get_db().calls.find_one({"_id": call["_id"]})
+    if completed_call.get("status") != "processed":
+        raise HTTPException(502, "Не удалось обработать запись. Проверьте настройки распознавания и повторите попытку.")
+    message = await get_db().messages.find_one({"_id": ObjectId(completed_call["message_id"])})
+    return serialize(message) | {"id": str(message["_id"])}
+
+
 @app.post("/webhooks/twilio/recording")
 async def twilio_recording(request: Request, background_tasks: BackgroundTasks):
     form = dict(await request.form())
@@ -425,20 +656,34 @@ async def twilio_recording(request: Request, background_tasks: BackgroundTasks):
     return {"ok": True, "status": "processing"}
 
 
-async def process_recording(call: dict, recording_url: str, recording_sid: str, recording_duration: str):
+async def process_recording(
+    call: dict,
+    recording_url: str,
+    recording_sid: str,
+    recording_duration: str,
+    audio_bytes: bytes | None = None,
+    audio_filename: str = "",
+    audio_content_type: str = "",
+):
     db = get_db()
     try:
-        transcript, language = await transcribe(recording_url)
+        organization = await db.organizations.find_one({"_id": oid(call["organization_id"])})
+        possible_languages = organization.get("languages", ["ru", "en", "et"]) if organization else ["ru", "en", "et"]
+        if audio_bytes is None:
+            transcript, language = await transcribe(recording_url, possible_languages)
+        else:
+            transcript, language = await transcribe_audio(audio_bytes, audio_filename, audio_content_type, possible_languages)
         if not transcript:
             transcript = "Не удалось распознать сообщение. Проверьте подключение OpenAI и повторите звонок."
         tags = await db.tags.find({"organization_id": call["organization_id"], "archived": {"$ne": True}}).to_list(length=300)
         result = await classify(transcript, tags)
         tag = next((item for item in tags if str(item["_id"]) == result.get("tag_id")), None)
-        message = {"organization_id": call["organization_id"], "call_id": str(call["_id"]), "contact_name": "Неизвестный номер", "caller_phone": call["caller_phone"], "summary": result["summary"], "transcript": transcript, "tag_id": result.get("tag_id"), "tag_name": result["tag_name"], "tag_origin": result.get("tag_origin", "existing" if tag else "suggested"), "confidence": result["confidence"], "language": result.get("language") or language or "", "status": "new", "duration_seconds": int(float(recording_duration or 0)), "source": "phone", "created_at": now_utc(), "updated_at": now_utc()}
+        source = call.get("source", "phone")
+        message = {"organization_id": call["organization_id"], "call_id": str(call["_id"]), "contact_name": call.get("contact_name", "Неизвестный номер"), "caller_phone": call["caller_phone"], "summary": result["summary"], "transcript": transcript, "tag_id": result.get("tag_id"), "tag_name": result["tag_name"], "tag_origin": result.get("tag_origin", "existing" if tag else "suggested"), "confidence": result["confidence"], "language": result.get("language") or language or "", "status": "new", "duration_seconds": int(float(recording_duration or 0)), "source": "simulated" if source == "simulated" else source, "created_at": now_utc(), "updated_at": now_utc()}
         inserted = await db.messages.insert_one(message)
         message["_id"] = inserted.inserted_id
         await db.calls.update_one({"_id": call["_id"]}, {"$set": {"status": "processed", "recording_sid": recording_sid, "message_id": str(inserted.inserted_id), "duration_seconds": message["duration_seconds"], "updated_at": now_utc()}})
-        await notify(call["organization_id"], "Новое сообщение о звонке", message["summary"], str(inserted.inserted_id))
+        await notify(call["organization_id"], "Новое сообщение в Telegram" if source == "telegram" else "Новое сообщение о звонке", message["summary"], str(inserted.inserted_id))
         await run_actions(message, call)
     except Exception as error:
         logging.exception("Recording processing failed")
@@ -447,7 +692,8 @@ async def process_recording(call: dict, recording_url: str, recording_sid: str, 
             await db.calls.update_one({"_id": call["_id"]}, {"$set": {"status": "failed", "processing_error": str(error)[:300], "updated_at": now_utc()}})
     finally:
         # Keep only the transcript in the application; remove the provider-side media copy too.
-        await delete_recording(recording_sid)
+        if recording_sid:
+            await delete_recording(recording_sid)
 
 
 @app.get("/api/admin/stats")

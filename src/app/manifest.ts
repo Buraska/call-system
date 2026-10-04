@@ -2,9 +2,9 @@ import type { MetadataRoute } from "next";
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "Kontuur — входящие звонки",
+    name: "Kontuur — Incoming calls",
     short_name: "Kontuur",
-    description: "Сообщения по звонкам для вашей организации",
+    description: "Call messages for your organization",
     start_url: "/",
     display: "standalone",
     background_color: "#f5f6f4",

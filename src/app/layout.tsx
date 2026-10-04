@@ -4,14 +4,14 @@ import "./globals.css";
 import "./settings.css";
 
 export const metadata: Metadata = {
-  title: "Kontuur — Входящие",
-  description: "Сообщения по пропущенным звонкам в одном месте",
+  title: "Kontuur — Inbox",
+  description: "Messages from missed calls, all in one place",
   manifest: "/manifest.webmanifest",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
   return (
-    <html lang="ru">
+    <html lang="en">
       <body>{children}</body>
     </html>
   );

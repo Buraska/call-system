@@ -15,6 +15,7 @@ from twilio.rest import Client as TwilioClient
 from .config import settings
 from .database import get_db
 
+from . import telegram
 logger = logging.getLogger(__name__)
 
 
@@ -40,9 +41,9 @@ async def notify(org_id: str, title: str, body: str, message_id: str | None = No
     db = get_db()
     item = {"organization_id": org_id, "title": title, "body": body, "message_id": message_id, "read": False, "created_at": datetime.now(timezone.utc)}
     await db.notifications.insert_one(item)
-    subs = await db.push_subscriptions.find({"organization_id": org_id}).to_list(length=100)
-    if subs:
-        await push_notify(subs, item)
+    subscribers = await db.telegram_subscribers.find({"organization_id": org_id, "state": "active"}).to_list(length=100)
+    for subscriber in subscribers:
+        await telegram.send_message(subscriber["chat_id"], f"{title}\n{body}")
 
 
 async def push_notify(subscriptions: list[dict], item: dict):
@@ -62,17 +63,28 @@ async def push_notify(subscriptions: list[dict], item: dict):
         return
 
 
-async def transcribe(recording_url: str) -> tuple[str, str]:
+async def transcribe_audio(audio: bytes, filename: str, content_type: str, possible_languages: list[str] | None = None) -> tuple[str, str]:
+    if not settings.openai_api_key:
+        return "", ""
+    client = AsyncOpenAI(api_key=settings.openai_api_key)
+    language_names = {"ru": "Russian", "en": "English", "et": "Estonian"}
+    prompt = None
+    if possible_languages:
+        names = [language_names[language] for language in possible_languages if language in language_names]
+        if names:
+            prompt = "The audio may be spoken in " + ", ".join(names) + "."
+    result = await client.audio.transcriptions.create(file=(filename, audio, content_type), model=settings.openai_transcription_model, response_format="verbose_json", **({"prompt": prompt} if prompt else {}))
+    return result.text.strip(), getattr(result, "language", "") or ""
+
+
+async def transcribe(recording_url: str, possible_languages: list[str] | None = None) -> tuple[str, str]:
     if not settings.openai_api_key:
         return "", ""
     auth = (settings.twilio_account_sid, settings.twilio_auth_token) if settings.twilio_account_sid else None
     async with httpx.AsyncClient(timeout=90) as http:
         response = await http.get(recording_url, auth=auth)
         response.raise_for_status()
-        audio = response.content
-    client = AsyncOpenAI(api_key=settings.openai_api_key)
-    result = await client.audio.transcriptions.create(file=("call.mp3", audio, "audio/mpeg"), model=settings.openai_transcription_model, response_format="verbose_json", language=None)
-    return result.text.strip(), getattr(result, "language", "") or ""
+    return await transcribe_audio(response.content, "call.mp3", "audio/mpeg", possible_languages)
 
 
 async def classify(text: str, tags: list[dict]) -> dict:
@@ -115,6 +127,10 @@ def render_template(template: str, message: dict, call: dict) -> str:
 
 
 async def send_message(channel: str, to: str, text: str) -> dict:
+    if channel == "telegram":
+        if not settings.telegram_bot_token:
+            return {"status": "demo", "detail": "Telegram bot is not configured; message was not sent"}
+        return await telegram.send_message(to, text)
     if not settings.twilio_account_sid or not settings.twilio_auth_token or not settings.twilio_phone_number:
         return {"status": "demo", "detail": "Twilio credentials are not configured; message was not sent"}
     client = TwilioClient(settings.twilio_account_sid, settings.twilio_auth_token)
@@ -132,11 +148,12 @@ async def run_actions(message: dict, call: dict):
     if not message.get("tag_id"):
         return
     db = get_db()
+    organization = await db.organizations.find_one({"_id": ObjectId(message["organization_id"])})
+    minimum_confidence = float((organization or {}).get("auto_reply_min_confidence", settings.auto_reply_min_confidence))
+    if float(message.get("confidence", 0)) < minimum_confidence:
+        return
     rules = await db.action_rules.find({"organization_id": message["organization_id"], "tag_id": message["tag_id"], "enabled": True}).to_list(length=20)
     for rule in rules:
-        confidence = float(message.get("confidence", 0))
-        if confidence < float(rule.get("min_confidence", settings.auto_reply_min_confidence)):
-            continue
         content = render_template(rule["message_template"], message, call)
         if rule["channel"] == "webhook":
             result = await send_webhook(rule.get("webhook_url", ""), {"event": "call.message.created", "message": serialize(message), "call": serialize(call), "text": content})

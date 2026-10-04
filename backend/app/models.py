@@ -26,6 +26,7 @@ class OrganizationSettings(BaseModel):
     phone_number: str | None = None
     forwarding_mode: Literal["busy_or_no_answer", "always"] | None = None
     languages: list[Literal["ru", "en", "et"]] | None = None
+    auto_reply_min_confidence: float | None = Field(default=None, ge=0, le=1)
 
     @field_validator("phone_number")
     @classmethod
@@ -50,10 +51,9 @@ class TagUpdate(BaseModel):
 
 class RuleCreate(BaseModel):
     tag_id: str
-    channel: Literal["sms", "whatsapp", "webhook"]
+    channel: Literal["sms", "whatsapp", "telegram", "webhook"]
     message_template: str = Field(min_length=1, max_length=1000)
     enabled: bool = True
-    min_confidence: float = Field(default=0.85, ge=0, le=1)
     webhook_url: str | None = None
 
     @field_validator("webhook_url")
@@ -65,12 +65,18 @@ class RuleCreate(BaseModel):
 
 
 class RuleUpdate(BaseModel):
-    channel: Literal["sms", "whatsapp", "webhook"] | None = None
+    tag_id: str | None = None
+    channel: Literal["sms", "whatsapp", "telegram", "webhook"] | None = None
     message_template: str | None = Field(default=None, min_length=1, max_length=1000)
     enabled: bool | None = None
-    min_confidence: float | None = Field(default=None, ge=0, le=1)
     webhook_url: str | None = None
 
+    @field_validator("webhook_url")
+    @classmethod
+    def validate_webhook(cls, value: str | None) -> str | None:
+        if value and not value.startswith("https://"):
+            raise ValueError("Webhook URL must use HTTPS")
+        return value
 
 class MessageUpdate(BaseModel):
     tag_id: str | None = None
@@ -79,13 +85,13 @@ class MessageUpdate(BaseModel):
 
 
 class ManualReply(BaseModel):
-    channel: Literal["sms", "whatsapp"]
+    channel: Literal["sms", "whatsapp", "telegram"]
     text: str = Field(min_length=1, max_length=1000)
 
 
 class BulkReply(BaseModel):
     message_ids: list[str] = Field(min_length=1, max_length=100)
-    channel: Literal["sms", "whatsapp"]
+    channel: Literal["sms", "whatsapp", "telegram"]
     text: str = Field(min_length=1, max_length=1000)
 
 

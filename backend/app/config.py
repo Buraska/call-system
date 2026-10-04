@@ -17,10 +17,14 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_transcription_model: str = "whisper-1"
     openai_classification_model: str = "gpt-4o-mini"
+    openai_agent_model: str = "gpt-6-luna"
     auto_reply_min_confidence: float = 0.85
     vapid_public_key: str = ""
     vapid_private_key: str = ""
     vapid_claims_email: str = "admin@example.com"
+    telegram_bot_token: str = ""
+    telegram_bot_username: str = ""
+    telegram_webhook_secret: str = ""
 
 
 settings = Settings()
