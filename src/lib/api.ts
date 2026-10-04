@@ -9,6 +9,6 @@ export async function api(path: string, token: string | null, init: RequestInit 
   if (usesNgrok) headers.set("ngrok-skip-browser-warning", "true");
   const response = await fetch(`${API}${path}`, { ...init, headers, cache: "no-store" });
   const data = response.status === 204 ? null : await response.json().catch(() => null);
-  if (!response.ok) throw new Error(data?.detail || `Ошибка запроса (${response.status})`);
+  if (!response.ok) throw new Error(data?.detail || `Request failed (${response.status})`);
   return data;
 }

@@ -9,9 +9,7 @@ type ChatSummary = { id: string; title: string; updated_at: string };
 type ChatAction = { name: string; status: string; detail?: string };
 type ChatMessage = { role: "user" | "assistant"; content: string; actions?: ChatAction[]; created_at: string; context_message_id?: string | null };
 type Chat = ChatSummary & { messages: ChatMessage[] };
-type AppLocale = "ru" | "en";
-
-export function AssistantChat({ token, contextMessageId, locale = "ru" }: { token: string; contextMessageId: string | null; locale?: AppLocale }) {
+export function AssistantChat({ token, contextMessageId }: { token: string; contextMessageId: string | null }) {
   const [open, setOpen] = useState(false);
   const [chats, setChats] = useState<ChatSummary[]>([]);
   const [chat, setChat] = useState<Chat | null>(null);
@@ -26,7 +24,7 @@ export function AssistantChat({ token, contextMessageId, locale = "ru" }: { toke
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
-  const text = locale === "en" ? {
+  const text = {
     open: "Open AI assistant", close: "Close assistant", launcher: "Assistant", panel: "AI assistant chat",
     currentContext: "Current message context", noSelection: "No message selected", back: "Back to chat", history: "Chat history",
     newChat: "New chat", privateChats: "Your private chats will appear here.", usingContext: "Using the selected message as context",
@@ -36,16 +34,6 @@ export function AssistantChat({ token, contextMessageId, locale = "ru" }: { toke
     recordMessage: "Record voice message", recording: "Recording…", transcribing: "Transcribing…",
     keyboardHint: "Enter to send · Shift+Enter for a new line", send: "Send message", noSpeech: "No speech was detected. Try another recording.",
     transcriptionAdded: "Transcription added to message", micError: "Microphone access was not available.", transcribed: (language: string) => `Transcribed · ${language}`,
-  } : {
-    open: "Открыть ИИ-ассистента", close: "Закрыть ассистента", launcher: "Ассистент", panel: "Чат с ИИ-ассистентом",
-    currentContext: "Контекст текущего сообщения", noSelection: "Сообщение не выбрано", back: "Вернуться к чату", history: "История чатов",
-    newChat: "Новый чат", privateChats: "Здесь будут отображаться ваши личные чаты.", usingContext: "Выбрано сообщение для контекста",
-    selectContext: "Выберите сообщение, чтобы добавить его в контекст ассистента", you: "Вы", assistant: "Ассистент", actions: "Действия",
-    working: "Ассистент обрабатывает запрос…", composerLabel: "Сообщение ассистенту", placeholder: "Спросите об этом сообщении…",
-    chooseAudio: "Выбрать аудиозапись", uploadAudio: "Загрузить голосовую запись", stopRecording: "Остановить запись",
-    recordMessage: "Записать голосовое сообщение", recording: "Идёт запись…", transcribing: "Распознавание речи…",
-    keyboardHint: "Enter — отправить · Shift+Enter — новая строка", send: "Отправить сообщение", noSpeech: "Речь не обнаружена. Попробуйте другую запись.",
-    transcriptionAdded: "Текст добавлен в сообщение", micError: "Не удалось получить доступ к микрофону.", transcribed: (language: string) => `Распознано · ${language}`,
   };
 
   const loadChats = useCallback(async () => {
@@ -135,8 +123,8 @@ export function AssistantChat({ token, contextMessageId, locale = "ru" }: { toke
   return <>
     <button type="button" className={styles.launcher} aria-label={open ? text.close : text.open} aria-expanded={open} onClick={() => setOpen((value) => !value)}><Bot size={19}/><span>{text.launcher}</span></button>
     {open && <section className={styles.panel} aria-label={text.panel}>
-      <header className={styles.header}><div className={styles.headerTitle}><span className={styles.botIcon}><Bot size={17}/></span><div><strong>{locale === "en" ? "Kontuur assistant" : "Ассистент Kontuur"}</strong><small>{contextMessageId ? text.currentContext : text.noSelection}</small></div></div><div className={styles.headerButtons}><button type="button" className={styles.iconButton} aria-label={historyOpen ? text.back : text.history} onClick={() => setHistoryOpen((value) => !value)}>{historyOpen ? <ArrowLeft size={17}/> : <ChevronDown size={17}/>}</button><button type="button" className={styles.iconButton} aria-label={text.close} onClick={dismiss}><X size={17}/></button></div></header>
-      {historyOpen ? <div className={styles.history} aria-label={text.history}><button type="button" className={styles.newChat} disabled={busy} onClick={createChat}><Plus size={16}/> {text.newChat}</button>{chats.length ? chats.map((item) => <button type="button" key={item.id} className={`${styles.historyItem} ${chat?.id === item.id ? styles.historyActive : ""}`} onClick={() => openChat(item.id)}><strong>{item.title || text.newChat}</strong><time>{new Date(item.updated_at).toLocaleDateString(locale === "ru" ? "ru-RU" : "en-US")}</time></button>) : <p className={styles.empty}>{text.privateChats}</p>}</div> : <>
+      <header className={styles.header}><div className={styles.headerTitle}><span className={styles.botIcon}><Bot size={17}/></span><div><strong>{"Kontuur assistant"}</strong><small>{contextMessageId ? text.currentContext : text.noSelection}</small></div></div><div className={styles.headerButtons}><button type="button" className={styles.iconButton} aria-label={historyOpen ? text.back : text.history} onClick={() => setHistoryOpen((value) => !value)}>{historyOpen ? <ArrowLeft size={17}/> : <ChevronDown size={17}/>}</button><button type="button" className={styles.iconButton} aria-label={text.close} onClick={dismiss}><X size={17}/></button></div></header>
+      {historyOpen ? <div className={styles.history} aria-label={text.history}><button type="button" className={styles.newChat} disabled={busy} onClick={createChat}><Plus size={16}/> {text.newChat}</button>{chats.length ? chats.map((item) => <button type="button" key={item.id} className={`${styles.historyItem} ${chat?.id === item.id ? styles.historyActive : ""}`} onClick={() => openChat(item.id)}><strong>{item.title || text.newChat}</strong><time>{new Date(item.updated_at).toLocaleDateString("en-US")}</time></button>) : <p className={styles.empty}>{text.privateChats}</p>}</div> : <>
         <div className={styles.contextBanner}>{contextMessageId ? text.usingContext : text.selectContext}</div>
         <div className={styles.messages} aria-live="polite" aria-relevant="additions text">
           {chat?.messages.map((message, index) => (

@@ -1,8 +1,8 @@
 self.addEventListener("push", (event) => {
   let payload = {};
-  try { payload = event.data ? event.data.json() : {}; } catch { payload = { title: "Новое обращение", body: event.data?.text() || "Поступило сообщение по звонку" }; }
-  event.waitUntil(self.registration.showNotification(payload.title || "Новое обращение", {
-    body: payload.body || "Поступило сообщение по звонку",
+  try { payload = event.data ? event.data.json() : {}; } catch { payload = { title: "New message", body: event.data?.text() || "A new call message has arrived" }; }
+  event.waitUntil(self.registration.showNotification(payload.title || "New message", {
+    body: payload.body || "A new call message has arrived",
     icon: "/icon.svg",
     badge: "/icon.svg",
     data: { url: payload.url || "/" },

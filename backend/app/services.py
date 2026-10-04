@@ -86,7 +86,7 @@ async def transcribe(recording_url: str, possible_languages: list[str] | None = 
 
 async def classify(text: str, tags: list[dict]) -> dict:
     if not text.strip():
-        return {"summary": "Не удалось распознать сообщение", "tag_id": None, "tag_name": "Нужно проверить", "confidence": 0, "language": ""}
+        return {"summary": "Could not transcribe the message", "tag_id": None, "tag_name": "Needs review", "confidence": 0, "language": ""}
     if settings.openai_api_key:
         prompt_tags = [{"id": str(tag["_id"]), "name": tag["name"]} for tag in tags]
         client = AsyncOpenAI(api_key=settings.openai_api_key)
@@ -95,7 +95,7 @@ async def classify(text: str, tags: list[dict]) -> dict:
                 model=settings.openai_classification_model,
                 response_format={"type": "json_object"},
                 messages=[
-                    {"role": "system", "content": "Классифицируй короткое голосовое сообщение для административной службы. Ответь JSON с полями summary (одно предложение), tag_id (id существующей категории или null), new_tag_name (короткое название новой категории или null), confidence (0..1), language (ru/en/et). Выбирай существующую категорию только при хорошем соответствии. Никогда не создавай действие или ответ."},
+                    {"role": "system", "content": "Classify a short voice message for a property management team. Respond with JSON fields summary (one sentence in English), tag_id (the id of an existing category or null), new_tag_name (a short English name for a new category or null), confidence (0..1), and language (ru/en/et). Choose an existing category only when it is a strong match. Never create an action or reply."},
                     {"role": "user", "content": json.dumps({"message": text, "categories": prompt_tags}, ensure_ascii=False)},
                 ],
                 temperature=0.1,
@@ -106,16 +106,28 @@ async def classify(text: str, tags: list[dict]) -> dict:
             if chosen:
                 return {"summary": str(data.get("summary") or text[:120]), "tag_id": str(chosen["_id"]), "tag_name": chosen["name"], "tag_origin": "existing", "confidence": float(data.get("confidence", 0.5)), "language": data.get("language", "")}
             if not new_name:
-                new_name = "Новая категория"
+                new_name = "New category"
             return {"summary": str(data.get("summary") or text[:120]), "tag_id": None, "tag_name": new_name, "tag_origin": "suggested", "confidence": float(data.get("confidence", 0.5)), "language": data.get("language", "")}
         except Exception:
             logger.exception("Classification failed; using safe fallback")
     lower = text.lower()
-    keywords = {"вода": ["вод", "water", "vesi"], "счётчик": ["счётчик", "счетчик", "meter", "arvesti"], "дверь": ["двер", "door", "uks"], "шум": ["шум", "громк", "noise", "müra"], "парков": ["парков", "parking", "parkimine"]}
-    chosen = next((tag for tag in tags if any(word in lower for key, words in keywords.items() if key in tag["name"].lower() for word in words)), None)
+    keywords = {
+        "water": ["water", "вод"],
+        "вод": ["вод", "water"],
+        "meter": ["meter", "счётчик", "счетчик"],
+        "счётчик": ["счётчик", "счетчик", "meter"],
+        "building": ["door", "entrance", "двер", "подъезд"],
+        "door": ["door", "entrance", "двер"],
+        "дверь": ["двер", "door", "entrance"],
+        "noise": ["noise", "шум", "громк"],
+        "шум": ["шум", "громк", "noise"],
+        "parking": ["parking", "парков"],
+        "парков": ["парков", "parking"],
+    }
+    chosen = next((tag for tag in tags if any(key in tag["name"].lower() for key, words in keywords.items() if any(word in lower for word in words))), None)
     if chosen:
         return {"summary": text[:120], "tag_id": str(chosen["_id"]), "tag_name": chosen["name"], "tag_origin": "existing", "confidence": 0.68, "language": ""}
-    return {"summary": text[:120], "tag_id": None, "tag_name": "Новая категория", "tag_origin": "suggested", "confidence": 0.3, "language": ""}
+    return {"summary": text[:120], "tag_id": None, "tag_name": "New category", "tag_origin": "suggested", "confidence": 0.3, "language": ""}
 
 
 def render_template(template: str, message: dict, call: dict) -> str:
@@ -150,7 +162,7 @@ async def run_actions(message: dict, call: dict):
         await db.action_runs.insert_one(run)
         if result["status"] == "sent":
             await db.messages.update_one({"_id": message["_id"]}, {"$set": {"auto_reply": {"channel": "telegram", "text": content, "status": "sent", "sent_at": datetime.now(timezone.utc), "provider_id": result.get("provider_id")}}})
-            await notify(message["organization_id"], "Автоответ отправлен", f"{message.get('tag_name', 'Обращение')} · Telegram", str(message["_id"]))
+            await notify(message["organization_id"], "Automatic reply sent", f"{message.get('tag_name', 'Inquiry')} · Telegram", str(message["_id"]))
         elif result["status"] == "demo":
             await db.messages.update_one({"_id": message["_id"]}, {"$set": {"auto_reply": {"channel": "telegram", "text": content, "status": "demo", "attempted_at": datetime.now(timezone.utc)}}})
 

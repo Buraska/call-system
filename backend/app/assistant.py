@@ -53,7 +53,7 @@ async def list_chats(user: dict = Depends(current_user)):
 @router.post("/chats")
 async def create_chat(user: dict = Depends(current_user)):
     now = now_utc()
-    chat = {"user_id": str(user["_id"]), "organization_id": user["organization_id"], "title": "Новый чат", "created_at": now, "updated_at": now, "messages": []}
+    chat = {"user_id": str(user["_id"]), "organization_id": user["organization_id"], "title": "New chat", "created_at": now, "updated_at": now, "messages": []}
     result = await get_db().assistant_chats.insert_one(chat)
     chat["_id"] = result.inserted_id
     return _chat_shape(chat)
@@ -200,7 +200,7 @@ async def post_chat_message(chat_id: str, body: ChatMessageRequest, user: dict =
     new_messages.append(user_message)
     title = chat["title"]
     if not chat.get("messages"):
-        title = body.content.strip().splitlines()[0][:64] or "Новый чат"
+        title = body.content.strip().splitlines()[0][:64] or "New chat"
 
     actions = []
     assistant_content = ""

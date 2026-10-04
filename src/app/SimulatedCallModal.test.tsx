@@ -60,14 +60,14 @@ describe("SimulatedCallModal", () => {
     const onCreated = vi.fn();
     render(<SimulatedCallModal token="test-token" onClose={vi.fn()} onCreated={onCreated} />);
 
-    const submit = screen.getByRole("button", { name: "Обработать как звонок" });
+    const submit = screen.getByRole("button", { name: "Process as call" });
     expect(submit).toBeDisabled();
-    await user.type(screen.getByLabelText("Номер звонившего"), "+37255551234");
+    await user.type(screen.getByLabelText("Caller phone number"), "+37255551234");
 
-    await user.click(screen.getByRole("button", { name: "Начать запись" }));
-    expect(await screen.findByText(/Идёт запись/)).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Start recording" }));
+    expect(await screen.findByText(/Recording/)).toBeVisible();
     expect(getUserMedia).toHaveBeenCalledWith({ audio: true });
-    await user.click(screen.getByRole("button", { name: "Остановить" }));
+    await user.click(screen.getByRole("button", { name: "Stop" }));
     await waitFor(() => expect(submit).toBeEnabled());
     expect(document.querySelector("audio.simulated-call-preview")).toHaveAttribute("src", "blob:recording");
     expect(stopTrack).toHaveBeenCalledOnce();

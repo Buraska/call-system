@@ -1,32 +1,34 @@
 # Kontuur MVP
 
-Веб-приложение для обработки звонков, переадресованных, когда сотрудник занят или не ответил. Телефонный провайдер записывает голосовое сообщение; сервер получает запись, создаёт транскрипт, выбирает существующий тэг или предлагает новый и запускает только заранее настроенное действие.
+An app for handling calls forwarded when an employee is busy or unavailable. The phone provider records a voicemail; the server receives it, creates a transcript, selects an existing tag or suggests a new one, and runs only a preconfigured action.
 
-## Возможности MVP
+## MVP features
 
-- Регистрация и вход; одна организация на аккаунт, обращения изолированы по организации.
-- Входящие звонки через Twilio Voice webhook и голосовая запись до 120 секунд.
-- Распознавание речи OpenAI Whisper для русского, английского и эстонского. Исходный аудиофайл не сохраняется: backend загружает его во временную память, отправляет на распознавание и не записывает URL/аудио в MongoDB.
-- Классификация текста по существующим тэгам через OpenAI. Если подходящего тэга нет, модель предлагает название. Предложение не становится правилом и не вызывает автоответ. Сотрудник может одобрить его, после чего оно появится в списке тэгов.
-- Краткое резюме, поиск, фильтры, ручная смена тэга, статус обработки.
-- Автоматические действия по тэгам отправляют ответы только в Telegram; общий порог уверенности и журнал попыток сохраняются.
-- Ручные и массовые Telegram-ответы доступны только для обращений, присланных через Telegram. Звонки через телефонную сеть остаются входящими обращениями.
-- Список уведомлений, периодическое обновление открытой вкладки и Web Push при настройке VAPID.
-- Установка как PWA на поддерживаемых устройствах.
-- На мобильных экранах разделы доступны через кнопку меню; панель закрывается после выбора раздела.
-- Интерфейс доступен на русском и английском; выбор сохраняется в браузере.
+- Registration and sign-in; one organization per account, with organization-level data isolation.
+- Incoming calls through the Twilio Voice webhook and voice recordings up to 120 seconds.
+- OpenAI Whisper transcription in Russian, English, and Estonian. Audio is held in backend memory, sent for transcription, and not stored in MongoDB.
+- OpenAI classification using existing tags. If no tag fits, the model suggests one; suggestions do not create rules or trigger automatic replies. Staff can approve a suggestion to add it to the tag list.
+- Summaries, search, filters, manual tag changes, and processing status.
+- Automatic tag actions send replies only through Telegram; all rules share a confidence threshold and retain an attempt log.
+- Manual and bulk Telegram replies are available only for messages received through Telegram. Phone-network calls remain inbound records.
+- Notifications, periodic updates in an open tab, and Web Push when VAPID is configured.
+- Installable PWA on supported devices.
+- On mobile screens, sections are available through the menu button; the panel closes after a section is selected.
+- The app interface is English-only. Speech transcription supports Russian, English, and Estonian.
 
-## Быстрый запуск в demo-режиме
+## Quick start in demo mode
 
-Нужны Python 3.12, Node.js 20+ и Docker. Backend использует зафиксированную версию `pydantic-core`, для которой нужен Python с готовым wheel; Python 3.14 может запустить сборку из исходников и потребовать Visual C++ Build Tools.
+Requirements: Python 3.12, Node.js 20+, and Docker.
 
-1. Запустите MongoDB из корня проекта:
+Python 3.12 is recommended because the pinned `pydantic-core` has a compatible wheel; Python 3.14 may attempt a source build that requires Visual C++ Build Tools.
+
+1. Start MongoDB from the project root:
 
    ```powershell
    docker compose up -d mongo
    ```
 
-2. Подготовьте backend:
+2. Set up the backend:
 
    ```powershell
    cd backend
@@ -37,26 +39,28 @@
    uvicorn app.main:app --reload --port 8000
    ```
 
-3. В другом терминале из корня проекта установите и запустите frontend:
+3. In another terminal, from the project root, install and start the frontend:
 
    ```powershell
    npm install
    npm run dev
    ```
 
-4. Откройте <http://localhost:3000>, создайте аккаунт. Demo-режим добавит примеры обращений; ответы на телефонные звонки не отправляются. OpenAPI-документация backend находится на <http://localhost:8000/docs>.
-Для проверки без настоящего телефонного звонка откройте «Настройки» → «Основные» и нажмите «Записать тестовый звонок». Это проверяет обработку записи, но не отправляет автоответ. Для проверки ответа отправьте голосовое сообщение через Telegram-бота; включённое правило может отправить сообщение в исходный Telegram-чат.
-В списке обращений первой открывается вкладка «Без ответа», затем «Все». «Выделить всё» выбирает сообщения, показанные в текущем списке. Кнопка «Добавить правило» открывает настройку действия; при выбранном тэге он подставляется автоматически. Общий порог уверенности для всех правил настраивается в «Настройки» → «Основные».
+4. Open <http://localhost:3000> and create an account. Demo mode adds sample records; replies to phone calls are not sent. Backend OpenAPI documentation is at <http://localhost:8000/docs>.
 
-## Тесты
+To test without placing a real phone call, open Settings → General and select Record a test call. This tests recording processing but does not send an automatic reply. To test replies, send a voice message through the Telegram bot; an enabled rule may send a message to the original Telegram chat.
 
-Frontend-тесты пользовательских сценариев:
+The inbox initially opens the Unanswered tab, followed by All. Select all selects the messages shown in the current list. Add action opens the action settings; the selected tag is filled in automatically. The confidence threshold shared by all rules is configured in Settings → General.
+
+## Tests
+
+Frontend user-flow tests:
 
 ```powershell
 npm test
 ```
 
-Backend-тесты (сначала активируйте виртуальное окружение backend на Python 3.12):
+Backend tests (activate the backend virtual environment using Python 3.12 first):
 
 ```powershell
 cd backend
@@ -64,13 +68,13 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-## Подключение телефонии и распознавания
+## Telephony and transcription setup
 
-В `backend/.env` укажите:
+Set the following values in `backend/.env`:
 
 ```dotenv
 DEMO_MODE=false
-JWT_SECRET=<длинный случайный секрет>
+JWT_SECRET=<long random secret>
 APP_BASE_URL=https://api.example.ee
 FRONTEND_ORIGIN=https://app.example.ee
 TWILIO_ACCOUNT_SID=AC...
@@ -78,50 +82,50 @@ TWILIO_AUTH_TOKEN=...
 OPENAI_API_KEY=...
 ```
 
-Языки для подсказки Whisper настраиваются администратором в приложении: «Настройки» → «Основные» → «Возможные языки». Выбранный список передаётся как контекстная подсказка; Whisper продолжает автоматически определять язык. Оставьте список пустым для обычного автоопределения.
+An administrator can configure Whisper transcription hints in Settings → General → Whisper transcription languages. The selected languages are passed as context; Whisper still detects the language automatically. Leave the list empty for automatic detection without a hint.
 
-Настройте каждый номер Twilio на Voice webhook `https://api.example.ee/webhooks/twilio/voice` методом POST. Разрешите публичный HTTPS-доступ к backend callbacks. Каждой организации нужно выделить отдельный входящий номер и назначить его во вкладке «Телефон и уведомления»: один и тот же номер нельзя маршрутизировать сразу нескольким организациям.
-Пользователь включает переадресацию своего номера при занятости/неответе на номер сервиса. USSD-коды различаются у Telia, Elisa и Tele2, поэтому приложение показывает общий чек-лист вместо обещания одного универсального кода. Условия доступности номера и переадресации нужно проверить по конкретному тарифу оператора.
+Configure each Twilio number to use the Voice webhook `https://api.example.ee/webhooks/twilio/voice` with the POST method. Make the backend callbacks publicly accessible over HTTPS. Assign a separate inbound number to each organization in Phone and notifications; a number cannot be routed to multiple organizations.
 
-## Telegram-канал
+Users forward their number to the service number when busy or unanswered. USSD codes vary between Telia, Elisa, and Tele2, so the app provides a general checklist rather than promising a universal code. Check number and call-forwarding availability for the specific carrier plan.
 
-- Telegram-бот принимает личные голосовые и аудиосообщения, передаёт аудио backend для транскрипции и обрабатывает обращение обычными правилами. Файл не сохраняется; лимит — 20 МБ. Подписаться можно через ссылку-приглашение: после `/start` бот спрашивает имя и автоматически привязывает подписчика к организации. App-аккаунт Telegram-пользователю не нужен. Обычный `/start` без ссылки сохраняет ручной ввод кода.
-- Администратор создаёт ссылку во вкладке «Настройки» → «Основные» кнопкой «Создать код подписки Telegram» и отправляет её подписчикам. Ссылка автоматически передаёт код боту. Код можно использовать многократно; создание нового кода отключает старые ссылки для новых подписок. Уже подписанные пользователи остаются активными.
-- Ответы на Telegram-обращения отправляются в исходный чат. Уведомления организации получают все Telegram-подписчики с действующим кодом этой организации.
+## Telegram
 
-Создайте бота через `@BotFather` и задайте backend `.env`:
+- The Telegram bot accepts private voice and audio messages, sends the audio to the backend for transcription, and processes the message using the usual rules. Files are not stored; the limit is 20 MB. Subscribers can use an invitation link: after `/start`, the bot asks for their name and automatically links them to the organization. Telegram users do not need an app account. Using `/start` without a link still allows manual code entry.
+- An administrator creates an invitation link in Settings → General using Create Telegram subscription link and sends it to subscribers. The link passes the code to the bot automatically. A code can be reused; creating a new code deactivates old links for new subscriptions. Existing subscribers remain active.
+- Replies to Telegram messages are sent to the original chat. All Telegram subscribers with an active code for the organization receive its notifications.
+
+Create a bot with `@BotFather` and set these values in the backend `.env`:
 
 ```dotenv
-TELEGRAM_BOT_TOKEN=<токен бота>
-TELEGRAM_BOT_USERNAME=<имя_бота без @>
-TELEGRAM_WEBHOOK_SECRET=<случайная строка 1–256 символов из a-z, A-Z, 0-9, _ или ->
-OPENAI_API_KEY=<ключ OpenAI для транскрипции>
+TELEGRAM_BOT_TOKEN=<bot token>
+TELEGRAM_BOT_USERNAME=<bot username without @>
+TELEGRAM_WEBHOOK_SECRET=<random string of 1–256 characters from a-z, A-Z, 0-9, _ or ->
+OPENAI_API_KEY=<OpenAI transcription key>
 ```
 
-Настройте Telegram webhook на `https://api.example.ee/webhooks/telegram`, передав `TELEGRAM_WEBHOOK_SECRET` как параметр `secret_token` метода Bot API `setWebhook`. Backend должен быть доступен Telegram по публичному HTTPS с действующим сертификатом. После изменения `.env` перезапустите backend.
+Configure the Telegram webhook at `https://api.example.ee/webhooks/telegram`, passing `TELEGRAM_WEBHOOK_SECRET` as the `secret_token` parameter to the Bot API `setWebhook` method. The backend must be publicly available to Telegram over HTTPS with a valid certificate. Restart the backend after changing `.env`.
 
-Аудиофайл загружается с Telegram на backend через Bot API и хранится только во временной памяти; транскрипт и сообщение сохраняются в организации, выбранной по ссылке-приглашению или вручную введённому коду.
+Audio is downloaded from Telegram to the backend through the Bot API and held only in temporary memory. The transcript and message are saved to the organization selected by the invitation link or manually entered code.
 
+## Reply delivery
 
-## Доставка ответов
+- Telegram is the only outbound messaging channel. Automatic rules and manual replies are sent to the original Telegram chat for the message.
+- Replies are available only for messages received through Telegram. Phone calls are accepted and processed, but cannot be replied to through Telegram.
+- On backend startup, legacy SMS, WhatsApp, and webhook rules are converted to disabled Telegram rules. Review their text and enable the rules you need manually.
+- An automatic reply is sent only when an enabled tag rule exists and classification confidence meets the organization's threshold.
 
-- Telegram — единственный канал исходящих сообщений. Автоматические правила и ручные ответы отправляются в исходный Telegram-чат обращения.
-- Ответы доступны только для обращений, полученных через Telegram. Обычные телефонные звонки принимаются и обрабатываются, но ответить на номер телефона через Telegram нельзя.
-- При запуске backend старые правила SMS, WhatsApp и webhook преобразуются в отключённые Telegram-правила. Проверьте текст и включите нужные правила вручную.
-- Автоответ срабатывает только для включённого правила по тэгу и при уверенности классификации не ниже порога организации.
+## Push notifications
 
-## Push-уведомления
+For push notifications when the app is closed, generate VAPID keys with `npx web-push generate-vapid-keys` and add `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, and `VAPID_CLAIMS_EMAIL` to the backend `.env`. Push requires HTTPS (except on localhost). Users then enable notifications in the app. Without VAPID, the notification list and updates in an open tab remain available.
 
-Для настоящих уведомлений при закрытой вкладке сгенерируйте VAPID-ключи командой `npx web-push generate-vapid-keys` и добавьте `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_CLAIMS_EMAIL` в backend `.env`. Push работает на HTTPS (кроме localhost). Сотрудник затем включает уведомления из приложения. Без VAPID доступен список уведомлений и обновление открытой вкладки.
-
-## Основные коллекции MongoDB
+## Main MongoDB collections
 
 `organizations`, `users`, `phone_numbers`, `calls`, `messages`, `tags`, `action_rules`, `action_runs`, `notifications`, `push_subscriptions`.
 
-Сообщение хранит транскрипт и метаданные, но аудио не сохраняется. В production настройте доступ к MongoDB, резервные копии, rate limiting на регистрацию и auth, ротацию JWT-секрета, ограничение размера записи, лимиты расходов внешних API, приватность вебхуков и срок хранения транскриптов.
+Messages store transcripts and metadata, not audio. For production, configure MongoDB access controls and backups, rate limits for registration and authentication, JWT secret rotation, recording-size limits, external API spending limits, and transcript retention.
 
-## Ограничения текущего MVP
+## Current MVP limitations
 
-- Для телефонии, распознавания, исходящих Telegram-сообщений и push нужны реквизиты Twilio, OpenAI, Telegram и VAPID соответственно.
-- Аудиозапись передаётся между Twilio и OpenAI; проверьте уведомление звонящего, правовое основание обработки и договоры обработки данных перед пилотом в Эстонии.
-- Уведомление звонящего сейчас озвучено на английском; локализацию greeting нужно добавить перед запуском.
+- Real Twilio, OpenAI, Telegram, and VAPID credentials are required for telephony, transcription, outbound Telegram messages, and push notifications.
+- Audio recordings are transferred between Twilio and OpenAI. Before piloting in Estonia, review caller disclosures, the legal basis for processing, and data processing agreements.
+- The caller greeting is currently in English; localize it before launch if needed.

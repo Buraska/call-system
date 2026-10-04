@@ -187,6 +187,21 @@ async def test_simulated_upload_rejects_invalid_inputs(harness, phone, duration,
 
 
 @pytest.mark.asyncio
+async def test_fallback_classifier_matches_english_default_tag(monkeypatch):
+    from app import services
+
+    monkeypatch.setattr(services.settings, "openai_api_key", "")
+    tag_id = ObjectId()
+
+    result = await services.classify(
+        "There is no water in the apartment",
+        [{"_id": tag_id, "name": "Water outage"}],
+    )
+
+    assert result["tag_id"] == str(tag_id)
+    assert result["tag_name"] == "Water outage"
+
+@pytest.mark.asyncio
 async def test_organization_confidence_threshold_gates_telegram_actions(harness):
     db, client, token, organization_id, tag_id = harness
     await db.action_rules.insert_one({"organization_id": organization_id, "tag_id": tag_id, "enabled": True, "channel": "telegram", "message_template": "A second action"})

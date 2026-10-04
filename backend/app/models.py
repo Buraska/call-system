@@ -34,7 +34,7 @@ class OrganizationSettings(BaseModel):
             return value
         normalized = value.replace(" ", "").replace("-", "")
         if not re.fullmatch(r"\+[1-9]\d{7,14}", normalized):
-            raise ValueError("Введите номер в международном формате, например +37255551234")
+            raise ValueError("Enter a phone number in international format, for example +37255551234")
         return normalized
 
 

@@ -5,9 +5,8 @@ import { Mic, X } from "lucide-react";
 import { api } from "../lib/api";
 
 type Message = { id: string };
-type AppLocale = "ru" | "en";
 
-export function SimulatedCallModal({ token, onClose, onCreated, locale = "ru" }: { token: string; onClose: () => void; onCreated: (message: Message) => void; locale?: AppLocale }) {
+export function SimulatedCallModal({ token, onClose, onCreated }: { token: string; onClose: () => void; onCreated: (message: Message) => void }) {
   const [callerPhone, setCallerPhone] = useState("");
   const [recording, setRecording] = useState(false);
   const [audio, setAudio] = useState<Blob | null>(null);
@@ -15,16 +14,11 @@ export function SimulatedCallModal({ token, onClose, onCreated, locale = "ru" }:
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [audioUrl, setAudioUrl] = useState("");
-  const text = locale === "en" ? {
+  const text = {
     eyebrow: "CALL PROCESSING TEST", title: "Record an inquiry", close: "Close", callerPhone: "Caller phone number",
     recording: "Recording", stop: "Stop", recordAgain: "Record again", start: "Start recording",
     warning: "This test call is not a Telegram message and will not send an auto-reply. Replies are only sent to Telegram chats that submitted audio through the bot.",
     cancel: "Cancel", processing: "Processing…", process: "Process as call", microphoneError: "Could not access the microphone",
-  } : {
-    eyebrow: "ТЕСТ ОБРАБОТКИ ЗВОНКА", title: "Записать обращение", close: "Закрыть", callerPhone: "Номер звонившего",
-    recording: "Идёт запись", stop: "Остановить", recordAgain: "Записать заново", start: "Начать запись",
-    warning: "Этот тестовый звонок не является сообщением из Telegram, автоответ не отправится. Ответы доступны только в Telegram-чат, из которого отправили аудио боту.",
-    cancel: "Отмена", processing: "Обработка…", process: "Обработать как звонок", microphoneError: "Не удалось получить доступ к микрофону",
   };
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
