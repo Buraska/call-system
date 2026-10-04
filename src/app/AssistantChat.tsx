@@ -9,8 +9,9 @@ type ChatSummary = { id: string; title: string; updated_at: string };
 type ChatAction = { name: string; status: string; detail?: string };
 type ChatMessage = { role: "user" | "assistant"; content: string; actions?: ChatAction[]; created_at: string; context_message_id?: string | null };
 type Chat = ChatSummary & { messages: ChatMessage[] };
+type AppLocale = "ru" | "en";
 
-export function AssistantChat({ token, contextMessageId }: { token: string; contextMessageId: string | null }) {
+export function AssistantChat({ token, contextMessageId, locale = "ru" }: { token: string; contextMessageId: string | null; locale?: AppLocale }) {
   const [open, setOpen] = useState(false);
   const [chats, setChats] = useState<ChatSummary[]>([]);
   const [chat, setChat] = useState<Chat | null>(null);
@@ -25,6 +26,27 @@ export function AssistantChat({ token, contextMessageId }: { token: string; cont
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const text = locale === "en" ? {
+    open: "Open AI assistant", close: "Close assistant", launcher: "Assistant", panel: "AI assistant chat",
+    currentContext: "Current message context", noSelection: "No message selected", back: "Back to chat", history: "Chat history",
+    newChat: "New chat", privateChats: "Your private chats will appear here.", usingContext: "Using the selected message as context",
+    selectContext: "Select a message to give the assistant context", you: "You", assistant: "Assistant", actions: "Actions",
+    working: "Assistant is working…", composerLabel: "Message the assistant", placeholder: "Ask about this message…",
+    chooseAudio: "Choose an audio recording", uploadAudio: "Upload voice recording", stopRecording: "Stop recording",
+    recordMessage: "Record voice message", recording: "Recording…", transcribing: "Transcribing…",
+    keyboardHint: "Enter to send · Shift+Enter for a new line", send: "Send message", noSpeech: "No speech was detected. Try another recording.",
+    transcriptionAdded: "Transcription added to message", micError: "Microphone access was not available.", transcribed: (language: string) => `Transcribed · ${language}`,
+  } : {
+    open: "Открыть ИИ-ассистента", close: "Закрыть ассистента", launcher: "Ассистент", panel: "Чат с ИИ-ассистентом",
+    currentContext: "Контекст текущего сообщения", noSelection: "Сообщение не выбрано", back: "Вернуться к чату", history: "История чатов",
+    newChat: "Новый чат", privateChats: "Здесь будут отображаться ваши личные чаты.", usingContext: "Выбрано сообщение для контекста",
+    selectContext: "Выберите сообщение, чтобы добавить его в контекст ассистента", you: "Вы", assistant: "Ассистент", actions: "Действия",
+    working: "Ассистент обрабатывает запрос…", composerLabel: "Сообщение ассистенту", placeholder: "Спросите об этом сообщении…",
+    chooseAudio: "Выбрать аудиозапись", uploadAudio: "Загрузить голосовую запись", stopRecording: "Остановить запись",
+    recordMessage: "Записать голосовое сообщение", recording: "Идёт запись…", transcribing: "Распознавание речи…",
+    keyboardHint: "Enter — отправить · Shift+Enter — новая строка", send: "Отправить сообщение", noSpeech: "Речь не обнаружена. Попробуйте другую запись.",
+    transcriptionAdded: "Текст добавлен в сообщение", micError: "Не удалось получить доступ к микрофону.", transcribed: (language: string) => `Распознано · ${language}`,
+  };
 
   const loadChats = useCallback(async () => {
     const items = await api("/api/assistant/chats", token) as ChatSummary[];
@@ -83,9 +105,9 @@ export function AssistantChat({ token, contextMessageId }: { token: string; cont
     try {
       const form = new FormData(); form.append("audio", file, file.name || "recording.webm");
       const result = await api("/api/assistant/transcribe", token, { method: "POST", body: form }) as { text: string; language: string };
-      if (!result.text?.trim()) { setError("No speech was detected. Try another recording."); return; }
+      if (!result.text?.trim()) { setError(text.noSpeech); return; }
       setDraft((old) => old ? `${old.trimEnd()} ${result.text.trim()}` : result.text.trim());
-      setNotice(result.language ? `Transcribed · ${result.language}` : "Transcription added to message");
+      setNotice(result.language ? text.transcribed(result.language) : text.transcriptionAdded);
     } catch (err) { setError((err as Error).message); }
     finally { setRecordingBusy(false); }
   }
@@ -105,23 +127,23 @@ export function AssistantChat({ token, contextMessageId }: { token: string; cont
         if (chunks.length) void transcribe(new File(chunks, `voice-${Date.now()}.webm`, { type: recorder.mimeType || "audio/webm" }));
       };
       recorder.start(); setRecording(true);
-    } catch (err) { setError((err as Error).message || "Microphone access was not available."); }
+    } catch (err) { setError((err as Error).message || text.micError); }
   }
 
   function dismiss() { if (recording) { recorderRef.current?.stop(); setRecording(false); } setOpen(false); }
 
   return <>
-    <button type="button" className={styles.launcher} aria-label={open ? "Close assistant" : "Open AI assistant"} aria-expanded={open} onClick={() => setOpen((value) => !value)}><Bot size={19}/><span>Assistant</span></button>
-    {open && <section className={styles.panel} aria-label="AI assistant chat">
-      <header className={styles.header}><div className={styles.headerTitle}><span className={styles.botIcon}><Bot size={17}/></span><div><strong>Kontuur assistant</strong><small>{contextMessageId ? "Current message context" : "No message selected"}</small></div></div><div className={styles.headerButtons}><button type="button" className={styles.iconButton} aria-label={historyOpen ? "Back to chat" : "Chat history"} onClick={() => setHistoryOpen((value) => !value)}>{historyOpen ? <ArrowLeft size={17}/> : <ChevronDown size={17}/>}</button><button type="button" className={styles.iconButton} aria-label="Close assistant" onClick={dismiss}><X size={17}/></button></div></header>
-      {historyOpen ? <div className={styles.history} aria-label="Chat history"><button type="button" className={styles.newChat} disabled={busy} onClick={createChat}><Plus size={16}/> New chat</button>{chats.length ? chats.map((item) => <button type="button" key={item.id} className={`${styles.historyItem} ${chat?.id === item.id ? styles.historyActive : ""}`} onClick={() => openChat(item.id)}><strong>{item.title || "New chat"}</strong><time>{new Date(item.updated_at).toLocaleDateString()}</time></button>) : <p className={styles.empty}>Your private chats will appear here.</p>}</div> : <>
-        <div className={styles.contextBanner}>{contextMessageId ? "Using the selected message as context" : "Select a message to give the assistant context"}</div>
+    <button type="button" className={styles.launcher} aria-label={open ? text.close : text.open} aria-expanded={open} onClick={() => setOpen((value) => !value)}><Bot size={19}/><span>{text.launcher}</span></button>
+    {open && <section className={styles.panel} aria-label={text.panel}>
+      <header className={styles.header}><div className={styles.headerTitle}><span className={styles.botIcon}><Bot size={17}/></span><div><strong>{locale === "en" ? "Kontuur assistant" : "Ассистент Kontuur"}</strong><small>{contextMessageId ? text.currentContext : text.noSelection}</small></div></div><div className={styles.headerButtons}><button type="button" className={styles.iconButton} aria-label={historyOpen ? text.back : text.history} onClick={() => setHistoryOpen((value) => !value)}>{historyOpen ? <ArrowLeft size={17}/> : <ChevronDown size={17}/>}</button><button type="button" className={styles.iconButton} aria-label={text.close} onClick={dismiss}><X size={17}/></button></div></header>
+      {historyOpen ? <div className={styles.history} aria-label={text.history}><button type="button" className={styles.newChat} disabled={busy} onClick={createChat}><Plus size={16}/> {text.newChat}</button>{chats.length ? chats.map((item) => <button type="button" key={item.id} className={`${styles.historyItem} ${chat?.id === item.id ? styles.historyActive : ""}`} onClick={() => openChat(item.id)}><strong>{item.title || text.newChat}</strong><time>{new Date(item.updated_at).toLocaleDateString(locale === "ru" ? "ru-RU" : "en-US")}</time></button>) : <p className={styles.empty}>{text.privateChats}</p>}</div> : <>
+        <div className={styles.contextBanner}>{contextMessageId ? text.usingContext : text.selectContext}</div>
         <div className={styles.messages} aria-live="polite" aria-relevant="additions text">
           {chat?.messages.map((message, index) => (
             <article className={`${styles.message} ${message.role === "user" ? styles.userMessage : styles.assistantMessage}`} key={`${message.created_at}-${index}`}>
-              <div className={styles.messageRole}>{message.role === "user" ? "You" : "Assistant"}</div>
+              <div className={styles.messageRole}>{message.role === "user" ? text.you : text.assistant}</div>
               <div className={styles.messageText}>{message.content}</div>
-              {message.actions?.length ? <div className={styles.actions}><strong>Actions</strong>{message.actions.map((action, actionIndex) => (
+              {message.actions?.length ? <div className={styles.actions}><strong>{text.actions}</strong>{message.actions.map((action, actionIndex) => (
                 <div className={styles.action} key={`${action.name}-${actionIndex}`}>
                   <span className={action.status === "completed" || action.status === "success" || action.status === "sent" ? styles.actionSuccess : action.status === "demo" ? styles.actionDemo : styles.actionFailed}>{action.status}</span>
                   <span><b>{action.name}</b>{action.detail && <small>{action.detail}</small>}</span>
@@ -129,11 +151,11 @@ export function AssistantChat({ token, contextMessageId }: { token: string; cont
               ))}</div> : null}
             </article>
           ))}
-          {busy && <div className={styles.busy} role="status"><LoaderCircle size={16} className={styles.spinner}/> Assistant is working…</div>}
+          {busy && <div className={styles.busy} role="status"><LoaderCircle size={16} className={styles.spinner}/> {text.working}</div>}
           <div ref={endRef}/>
         </div>
         {error && <div className={styles.error} role="alert">{error}</div>}{notice && <div className={styles.notice} role="status">{notice}</div>}
-        <form className={styles.composer} onSubmit={submit} aria-busy={busy || recordingBusy}><textarea aria-label="Message the assistant" value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Ask about this message…" rows={2} disabled={busy || recordingBusy} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }}/><div className={styles.composerButtons}><input ref={fileRef} className={styles.fileInput} type="file" accept="audio/*" aria-label="Choose an audio recording" onChange={(event) => { const file = event.target.files?.[0]; if (file) void transcribe(file); event.currentTarget.value = ""; }}/><button type="button" className={styles.iconButton} disabled={busy || recordingBusy} onClick={() => fileRef.current?.click()} aria-label="Upload voice recording"><Mic size={17}/></button><button type="button" className={`${styles.iconButton} ${recording ? styles.recording : ""}`} disabled={busy || recordingBusy} onClick={toggleRecording} aria-label={recording ? "Stop recording" : "Record voice message"}>{recording ? <Square size={15}/> : <span className={styles.recordDot}/>}</button><span className={styles.composerHint} role="status" aria-live="polite">{recording ? "Recording…" : recordingBusy ? "Transcribing…" : "Enter to send · Shift+Enter for a new line"}</span><button type="submit" className={styles.send} disabled={!draft.trim() || busy || recordingBusy} aria-label="Send message"><Send size={16}/></button></div></form>
+        <form className={styles.composer} onSubmit={submit} aria-busy={busy || recordingBusy}><textarea aria-label={text.composerLabel} value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={text.placeholder} rows={2} disabled={busy || recordingBusy} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }}/><div className={styles.composerButtons}><input ref={fileRef} className={styles.fileInput} type="file" accept="audio/*" aria-label={text.chooseAudio} onChange={(event) => { const file = event.target.files?.[0]; if (file) void transcribe(file); event.currentTarget.value = ""; }}/><button type="button" className={styles.iconButton} disabled={busy || recordingBusy} onClick={() => fileRef.current?.click()} aria-label={text.uploadAudio}><Mic size={17}/></button><button type="button" className={`${styles.iconButton} ${recording ? styles.recording : ""}`} disabled={busy || recordingBusy} onClick={toggleRecording} aria-label={recording ? text.stopRecording : text.recordMessage}>{recording ? <Square size={15}/> : <span className={styles.recordDot}/>}</button><span className={styles.composerHint} role="status" aria-live="polite">{recording ? text.recording : recordingBusy ? text.transcribing : text.keyboardHint}</span><button type="submit" className={styles.send} disabled={!draft.trim() || busy || recordingBusy} aria-label={text.send}><Send size={16}/></button></div></form>
       </>}
     </section>}
   </>;

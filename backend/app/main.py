@@ -19,7 +19,7 @@ from .models import (BulkReply, LoginRequest, ManualReply, MessageUpdate, Notifi
                      OrganizationSettings, RegisterRequest, RuleCreate, RuleUpdate,
                      TagCreate, TagUpdate, WebPushSubscription, now_utc)
 from .security import create_access_token, current_user, hash_password, verify_password
-from .services import classify, delete_recording, notify, oid, run_actions, serialize, transcribe, transcribe_audio, send_message
+from .services import classify, delete_recording, notify, oid, run_actions, serialize, transcribe, transcribe_audio, send_telegram
 from .assistant import router as assistant_router
 from . import telegram
 
@@ -199,9 +199,7 @@ async def create_rule(body: RuleCreate, user: dict = Depends(current_user)):
     tag = await db.tags.find_one({"_id": oid(body.tag_id), "organization_id": user["organization_id"], "archived": {"$ne": True}})
     if not tag:
         raise HTTPException(404, "Тэг не найден")
-    if body.channel == "webhook" and not body.webhook_url:
-        raise HTTPException(422, "Для вебхука укажите URL")
-    item = {"organization_id": user["organization_id"], "tag_id": body.tag_id, "tag_name": tag["name"], **body.model_dump(), "created_at": now_utc(), "updated_at": now_utc()}
+    item = {"organization_id": user["organization_id"], "tag_id": body.tag_id, "tag_name": tag["name"], "channel": "telegram", **body.model_dump(), "created_at": now_utc(), "updated_at": now_utc()}
     result = await db.action_rules.insert_one(item)
     item["_id"] = result.inserted_id
     return serialize(item) | {"id": str(result.inserted_id)}
@@ -301,25 +299,29 @@ async def reply(message_id: str, body: ManualReply, user: dict = Depends(current
         message = None
     if not message:
         raise HTTPException(404, "Сообщение не найдено")
-    result = await send_message(body.channel, message.get("caller_phone", ""), body.text)
-    run = {"organization_id": user["organization_id"], "message_id": message_id, "channel": body.channel, "kind": "manual", "status": result["status"], "detail": result.get("detail"), "provider_id": result.get("provider_id"), "created_at": now_utc()}
+    if message.get("source") != "telegram":
+        raise HTTPException(409, "Ответы доступны только для сообщений, полученных через Telegram")
+    result = await send_telegram(message.get("caller_phone", ""), body.text)
+    run = {"organization_id": user["organization_id"], "message_id": message_id, "channel": "telegram", "kind": "manual", "status": result["status"], "detail": result.get("detail"), "provider_id": result.get("provider_id"), "created_at": now_utc()}
     await db.action_runs.insert_one(run)
     if result["status"] == "failed":
         raise HTTPException(502, result.get("detail", "Не удалось отправить сообщение"))
-    await db.messages.update_one({"_id": message["_id"]}, {"$set": {"last_reply": {"channel": body.channel, "text": body.text, "status": result["status"], "sent_at": now_utc(), "provider_id": result.get("provider_id")}}})
-    return {"status": result["status"], "channel": body.channel, "text": body.text}
+    await db.messages.update_one({"_id": message["_id"]}, {"$set": {"last_reply": {"channel": "telegram", "text": body.text, "status": result["status"], "sent_at": now_utc(), "provider_id": result.get("provider_id")}}})
+    return {"status": result["status"], "channel": "telegram", "text": body.text}
 
 
 @app.post("/api/messages/bulk-reply")
 async def bulk_reply(body: BulkReply, user: dict = Depends(current_user)):
     db = get_db()
     messages = await db.messages.find({"_id": {"$in": [oid(item) for item in body.message_ids]}, "organization_id": user["organization_id"]}).to_list(length=100)
+    if any(message.get("source") != "telegram" for message in messages):
+        raise HTTPException(409, "Массовые ответы доступны только для сообщений, полученных через Telegram")
     results = []
     for message in messages:
-        result = await send_message(body.channel, message.get("caller_phone", ""), body.text)
-        await db.action_runs.insert_one({"organization_id": user["organization_id"], "message_id": str(message["_id"]), "channel": body.channel, "kind": "manual_bulk", "status": result["status"], "detail": result.get("detail"), "provider_id": result.get("provider_id"), "created_at": now_utc()})
+        result = await send_telegram(message.get("caller_phone", ""), body.text)
+        await db.action_runs.insert_one({"organization_id": user["organization_id"], "message_id": str(message["_id"]), "channel": "telegram", "kind": "manual_bulk", "status": result["status"], "detail": result.get("detail"), "provider_id": result.get("provider_id"), "created_at": now_utc()})
         if result["status"] != "failed":
-            await db.messages.update_one({"_id": message["_id"]}, {"$set": {"last_reply": {"channel": body.channel, "text": body.text, "status": result["status"], "sent_at": now_utc()}}})
+            await db.messages.update_one({"_id": message["_id"]}, {"$set": {"last_reply": {"channel": "telegram", "text": body.text, "status": result["status"], "sent_at": now_utc()}}})
         results.append({"message_id": str(message["_id"]), **result})
     return {"results": results}
 
@@ -530,10 +532,10 @@ async def seed_demo(user: dict = Depends(current_user)):
     tag_by_name = {tag["name"]: tag for tag in tags}
     now = now_utc()
     samples = [
-        {"contact_name": "Анна Петрова", "caller_phone": "+372 5555 4218", "summary": "В квартире с утра нет воды", "transcript": "Здравствуйте. Я живу в доме на улице Койду, 14, в квартире 23. С самого утра нет холодной воды. У соседей, кажется, тоже. Подскажите, пожалуйста, когда починят?", "tag_name": "Нет воды", "tag_origin": "existing", "confidence": .97, "language": "ru", "minutes": 12, "response": "Здравствуйте! Мы получили ваше сообщение и передали его ответственному специалисту."},
+        {"contact_name": "Анна Петрова", "caller_phone": "+372 5555 4218", "summary": "В квартире с утра нет воды", "transcript": "Здравствуйте. Я живу в доме на улице Койду, 14, в квартире 23. С самого утра нет холодной воды. У соседей, кажется, тоже. Подскажите, пожалуйста, когда починят?", "tag_name": "Нет воды", "tag_origin": "existing", "confidence": .97, "language": "ru", "minutes": 12},
         {"contact_name": "Неизвестный номер", "caller_phone": "+372 5555 8706", "summary": "Не могут попасть к счётчику", "transcript": "Добрый день, это из квартиры 18. Сантехник не может попасть в подвал к счётчику, дверь закрыта, а ключа у нас нет. К кому можно обратиться?", "tag_name": "Нет доступа к счётчику", "tag_origin": "suggested", "confidence": .78, "language": "ru", "minutes": 36},
-        {"contact_name": "Михаил Соколов", "caller_phone": "+372 5555 2155", "summary": "Сломался доводчик входной двери", "transcript": "Хотел сообщить, что входная дверь в подъезд уже несколько дней не закрывается сама. Видимо, сломался доводчик. Это третий подъезд.", "tag_name": "Ремонт подъезда", "tag_origin": "existing", "confidence": .93, "language": "ru", "minutes": 61, "response": "Спасибо, что сообщили. Заявку на ремонт двери передали управляющему."},
-        {"contact_name": "Елена", "caller_phone": "+372 5555 6490", "summary": "Вопрос по парковочному разрешению", "transcript": "Здравствуйте, подскажите, где можно получить новое парковочное разрешение? Старое заканчивается в конце месяца.", "tag_name": "Вопрос по парковке", "tag_origin": "existing", "confidence": .96, "language": "ru", "minutes": 900, "status": "done", "response": "Здравствуйте! По вопросу парковочного разрешения можно обратиться в городской отдел обслуживания."},
+        {"contact_name": "Михаил Соколов", "caller_phone": "+372 5555 2155", "summary": "Сломался доводчик входной двери", "transcript": "Хотел сообщить, что входная дверь в подъезд уже несколько дней не закрывается сама. Видимо, сломался доводчик. Это третий подъезд.", "tag_name": "Ремонт подъезда", "tag_origin": "existing", "confidence": .93, "language": "ru", "minutes": 61},
+        {"contact_name": "Елена", "caller_phone": "+372 5555 6490", "summary": "Вопрос по парковочному разрешению", "transcript": "Здравствуйте, подскажите, где можно получить новое парковочное разрешение? Старое заканчивается в конце месяца.", "tag_name": "Вопрос по парковке", "tag_origin": "existing", "confidence": .96, "language": "ru", "minutes": 900, "status": "done"},
         {"contact_name": "Неизвестный номер", "caller_phone": "+372 5555 0932", "summary": "Вечером шумно у соседей сверху", "transcript": "Добрый вечер. В квартире надо мной уже второй вечер громко играет музыка после одиннадцати. Хотелось бы понять, куда обратиться.", "tag_name": "Шум от соседей", "tag_origin": "suggested", "confidence": .74, "language": "ru", "minutes": 1200},
     ]
     for index, sample in enumerate(samples):
@@ -545,8 +547,6 @@ async def seed_demo(user: dict = Depends(current_user)):
             tag_by_name[tag["name"]] = tag
         created = now.replace() - __import__("datetime").timedelta(minutes=sample["minutes"])
         item = {"organization_id": org_id, "contact_name": sample["contact_name"], "caller_phone": sample["caller_phone"], "summary": sample["summary"], "transcript": sample["transcript"], "tag_id": str(tag["_id"]) if tag else None, "tag_name": sample["tag_name"], "tag_origin": sample["tag_origin"], "confidence": sample["confidence"], "language": sample["language"], "status": sample.get("status", "new"), "duration_seconds": 38 + index * 13, "source": "demo", "created_at": created, "updated_at": created}
-        if sample.get("response"):
-            item["auto_reply"] = {"channel": "sms", "text": sample["response"], "sent_at": created, "provider_id": None}
         await db.messages.insert_one(item)
     for item in samples[:2]:
         await notify(org_id, "Новое сообщение о звонке", item["summary"])

@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 import re
 from typing import Any, Literal
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 
 def now_utc() -> datetime:
@@ -14,7 +14,6 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
     phone: str = ""
-
 
 class LoginRequest(BaseModel):
     email: EmailStr
@@ -50,33 +49,18 @@ class TagUpdate(BaseModel):
 
 
 class RuleCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     tag_id: str
-    channel: Literal["sms", "whatsapp", "telegram", "webhook"]
     message_template: str = Field(min_length=1, max_length=1000)
     enabled: bool = True
-    webhook_url: str | None = None
-
-    @field_validator("webhook_url")
-    @classmethod
-    def validate_webhook(cls, value: str | None) -> str | None:
-        if value and not value.startswith("https://"):
-            raise ValueError("Webhook URL must use HTTPS")
-        return value
 
 
 class RuleUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     tag_id: str | None = None
-    channel: Literal["sms", "whatsapp", "telegram", "webhook"] | None = None
     message_template: str | None = Field(default=None, min_length=1, max_length=1000)
     enabled: bool | None = None
-    webhook_url: str | None = None
 
-    @field_validator("webhook_url")
-    @classmethod
-    def validate_webhook(cls, value: str | None) -> str | None:
-        if value and not value.startswith("https://"):
-            raise ValueError("Webhook URL must use HTTPS")
-        return value
 
 class MessageUpdate(BaseModel):
     tag_id: str | None = None
@@ -85,14 +69,15 @@ class MessageUpdate(BaseModel):
 
 
 class ManualReply(BaseModel):
-    channel: Literal["sms", "whatsapp", "telegram"]
+    model_config = ConfigDict(extra="forbid")
     text: str = Field(min_length=1, max_length=1000)
 
 
 class BulkReply(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     message_ids: list[str] = Field(min_length=1, max_length=100)
-    channel: Literal["sms", "whatsapp", "telegram"]
     text: str = Field(min_length=1, max_length=1000)
+
 
 
 class NotificationRead(BaseModel):

@@ -58,6 +58,12 @@ class Collection:
         for key in update.get("$unset", {}):
             row.pop(key, None)
         return SimpleNamespace(matched_count=1, modified_count=1)
+    async def delete_one(self, query):
+        index = next((index for index, row in enumerate(self.rows) if matches(row, query)), None)
+        if index is None:
+            return SimpleNamespace(deleted_count=0)
+        del self.rows[index]
+        return SimpleNamespace(deleted_count=1)
 
 
 def matches(row, query):
@@ -91,13 +97,13 @@ async def notify(*args, **kwargs):
     return None
 
 
-async def send_message(channel, to, text):
+async def send_telegram(to, text):
     return {"status": "sent", "provider_id": "mock-provider"}
 
 
 @pytest_asyncio.fixture
 async def harness(monkeypatch):
-    from app import security, services
+    from app import assistant, security, services
 
     db = Database()
     db.transcription_languages = []
@@ -112,12 +118,14 @@ async def harness(monkeypatch):
     monkeypatch.setattr(main, "classify", classify)
     monkeypatch.setattr(main, "notify", notify)
     monkeypatch.setattr(services, "notify", notify)
-    monkeypatch.setattr(services, "send_message", send_message)
+    monkeypatch.setattr(services, "send_telegram", send_telegram)
+    monkeypatch.setattr(main, "send_telegram", send_telegram)
+    monkeypatch.setattr(assistant, "send_telegram", send_telegram)
     organization_id = str(ObjectId())
     await db.organizations.insert_one({"_id": ObjectId(organization_id), "name": "Test organization"})
     tag_id = str(ObjectId())
     await db.tags.insert_one({"_id": ObjectId(tag_id), "organization_id": organization_id, "name": "Water", "archived": False})
-    await db.action_rules.insert_one({"_id": ObjectId(), "organization_id": organization_id, "tag_id": tag_id, "enabled": True, "min_confidence": 0.8, "channel": "sms", "message_template": "We received your report"})
+    await db.action_rules.insert_one({"_id": ObjectId(), "organization_id": organization_id, "tag_id": tag_id, "enabled": True, "channel": "telegram", "message_template": "We received your report", "created_at": main.now_utc()})
     user = {"_id": ObjectId(), "organization_id": organization_id, "role": "admin"}
     await db.users.insert_one(user)
     token = main.create_access_token(user)
@@ -127,7 +135,7 @@ async def harness(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_simulated_upload_processes_call_and_dispatches_eligible_action(harness):
+async def test_simulated_phone_call_is_processed_without_telegram_reply(harness):
     db, client, token, _, _ = harness
     response = await client.post("/api/calls/simulate", headers={"Authorization": f"Bearer {token}"}, data={"caller_phone": "+37255551234", "duration_seconds": "32"}, files={"audio": ("call.webm", b"recording", "audio/webm")})
     assert response.status_code == 201, response.text
@@ -141,8 +149,8 @@ async def test_simulated_upload_processes_call_and_dispatches_eligible_action(ha
     assert call["status"] == "processed"
     assert call["message_id"] == body["id"]
     assert len(db.messages.rows) == 1
-    assert db.action_runs.rows[0]["status"] == "sent"
-    assert db.messages.rows[0]["auto_reply"]["text"] == "We received your report"
+    assert db.action_runs.rows == []
+    assert "auto_reply" not in db.messages.rows[0]
 
 
 @pytest.mark.asyncio
@@ -179,31 +187,31 @@ async def test_simulated_upload_rejects_invalid_inputs(harness, phone, duration,
 
 
 @pytest.mark.asyncio
-async def test_organization_confidence_threshold_gates_every_action(harness):
+async def test_organization_confidence_threshold_gates_telegram_actions(harness):
     db, client, token, organization_id, tag_id = harness
-    db.action_rules.rows[0]["min_confidence"] = 0.8
-    await db.action_rules.insert_one({"organization_id": organization_id, "tag_id": tag_id, "enabled": True, "min_confidence": 0.1, "channel": "telegram", "message_template": "A second action"})
+    await db.action_rules.insert_one({"organization_id": organization_id, "tag_id": tag_id, "enabled": True, "channel": "telegram", "message_template": "A second action"})
     response = await client.patch("/api/organization", headers={"Authorization": f"Bearer {token}"}, json={"auto_reply_min_confidence": 0.99})
     assert response.status_code == 200
     assert response.json()["auto_reply_min_confidence"] == 0.99
-
-    response = await client.post("/api/calls/simulate", headers={"Authorization": f"Bearer {token}"}, data={"caller_phone": "+37255551234", "duration_seconds": "32"}, files={"audio": ("call.webm", b"recording", "audio/webm")})
-
-    assert response.status_code == 201
+    from app import services
+    message = {"_id": ObjectId(), "organization_id": organization_id, "tag_id": tag_id, "tag_name": "Water", "confidence": 0.95}
+    await db.messages.insert_one(message)
+    await services.run_actions(message, {"source": "telegram", "caller_phone": "telegram-chat"})
     assert db.action_runs.rows == []
-    assert "auto_reply" not in db.messages.rows[0]
+    assert "auto_reply" not in await db.messages.find_one({"_id": message["_id"]})
 
 
 @pytest.mark.asyncio
 async def test_global_confidence_threshold_includes_exact_boundary(harness):
-    _, client, token, _, _ = harness
+    db, client, token, organization_id, tag_id = harness
     response = await client.patch("/api/organization", headers={"Authorization": f"Bearer {token}"}, json={"auto_reply_min_confidence": 0.95})
     assert response.status_code == 200
-
-    response = await client.post("/api/calls/simulate", headers={"Authorization": f"Bearer {token}"}, data={"caller_phone": "+37255551234", "duration_seconds": "32"}, files={"audio": ("call.webm", b"recording", "audio/webm")})
-
-    assert response.status_code == 201
-    assert response.json()["auto_reply"]["text"] == "We received your report"
+    message = {"_id": ObjectId(), "organization_id": organization_id, "tag_id": tag_id, "tag_name": "Water", "summary": "No water", "confidence": 0.95}
+    await db.messages.insert_one(message)
+    from app import services
+    await services.run_actions(message, {"source": "telegram", "caller_phone": "telegram-chat"})
+    stored = await db.messages.find_one({"_id": message["_id"]})
+    assert stored["auto_reply"]["text"] == "We received your report"
 
 @pytest.mark.asyncio
 async def test_telegram_audio_webhook_processes_audio_and_deduplicates(harness, monkeypatch):
@@ -373,23 +381,23 @@ async def test_assistant_automatically_updates_message_sends_reply_and_creates_c
     monkeypatch.setattr(settings, "openai_agent_model", "gpt-6-luna")
     message_id = ObjectId()
     await db.messages.insert_one({
-        "_id": message_id, "organization_id": organization_id, "caller_phone": "+37255550001",
+        "_id": message_id, "organization_id": organization_id, "caller_phone": "777",
         "summary": "Water leak", "transcript": "There is a leak", "tag_id": tag_id,
-        "tag_name": "Water", "status": "new", "created_at": main.now_utc(),
+        "tag_name": "Water", "source": "telegram", "status": "new", "created_at": main.now_utc(),
     })
     sent = []
 
-    async def send_message(channel, to, text):
-        sent.append((channel, to, text))
+    async def send_telegram(to, text):
+        sent.append((to, text))
         return {"status": "sent", "provider_id": "assistant-reply"}
 
-    monkeypatch.setattr(assistant, "send_message", send_message)
+    monkeypatch.setattr(assistant, "send_telegram", send_telegram)
     captured = []
     mock_assistant_model(monkeypatch, [
         assistant_response(tool_calls=[
             assistant_tool_call("update_message", {"status": "done", "tag_id": None, "contact_name": None}, "call-1"),
-            assistant_tool_call("send_reply", {"channel": "sms", "text": "We received your report."}, "call-2"),
-            assistant_tool_call("create_rule", {"channel": "sms", "message_template": "Received: {{summary}}", "enabled": True, "webhook_url": None}, "call-3"),
+            assistant_tool_call("send_reply", {"text": "We received your report."}, "call-2"),
+            assistant_tool_call("create_rule", {"message_template": "Received: {{summary}}", "enabled": True}, "call-3"),
         ]),
         assistant_response("Updated the message, sent the reply, and created the rule."),
     ], captured)
@@ -405,7 +413,7 @@ async def test_assistant_automatically_updates_message_sends_reply_and_creates_c
     stored_message = await db.messages.find_one({"_id": message_id})
     assert stored_message["status"] == "done"
     assert stored_message["last_reply"]["text"] == "We received your report."
-    assert sent == [("sms", "+37255550001", "We received your report.")]
+    assert sent == [("777", "We received your report.")]
     assert len(db.action_runs.rows) == 1
     created_rule = next(rule for rule in db.action_rules.rows if rule["message_template"] == "Received: {{summary}}")
     assert created_rule["organization_id"] == organization_id
@@ -495,7 +503,7 @@ async def test_assistant_accepts_suggested_category_before_creating_its_rule(har
     mock_assistant_model(monkeypatch, [
         assistant_response(tool_calls=[
             assistant_tool_call("accept_suggested_tag", {}, "accept-tag"),
-            assistant_tool_call("create_rule", {"channel": "sms", "message_template": "We received: {{summary}}", "enabled": True, "webhook_url": None}, "create-rule"),
+            assistant_tool_call("create_rule", {"message_template": "We received: {{summary}}", "enabled": True}, "create-rule"),
         ]),
         assistant_response("Accepted the category and created its rule."),
     ], captured)
@@ -504,7 +512,7 @@ async def test_assistant_accepts_suggested_category_before_creating_its_rule(har
     response = await client.post(
         f"/api/assistant/chats/{created.json()['id']}/messages",
         headers=headers,
-        json={"content": "Accept this category and create an SMS rule.", "context_message_id": str(suggested_id)},
+        json={"content": "Accept this category and create a Telegram rule.", "context_message_id": str(suggested_id)},
     )
 
     assert response.status_code == 200, response.text
@@ -536,13 +544,13 @@ async def test_assistant_cannot_change_another_category_or_organization(harness,
     other_rule_id = ObjectId()
     await db.action_rules.insert_one({
         "_id": other_rule_id, "organization_id": organization_id, "tag_id": str(other_tag_id),
-        "channel": "sms", "message_template": "Existing rule", "enabled": True,
+        "channel": "telegram", "message_template": "Existing rule", "enabled": True,
     })
     captured = []
     mock_assistant_model(monkeypatch, [
         assistant_response(tool_calls=[
             assistant_tool_call("update_message", {"status": None, "tag_id": str(foreign_tag_id), "contact_name": None}, "foreign-tag"),
-            assistant_tool_call("update_rule", {"rule_id": str(other_rule_id), "channel": None, "message_template": None, "enabled": False, "webhook_url": None}, "other-category-rule"),
+            assistant_tool_call("update_rule", {"rule_id": str(other_rule_id), "message_template": None, "enabled": False}, "other-category-rule"),
         ]),
         assistant_response("Those actions were rejected because they are outside this message's context."),
     ], captured)
@@ -637,9 +645,7 @@ async def test_rule_edit_updates_owned_tag_and_rejects_foreign_tag(harness):
         headers=headers,
         json={
             "tag_id": tag_id,
-            "channel": "webhook",
             "message_template": "Call update: {{summary}}",
-            "webhook_url": "https://example.ee/calls",
             "enabled": False,
         },
     )
@@ -647,9 +653,9 @@ async def test_rule_edit_updates_owned_tag_and_rejects_foreign_tag(harness):
     assert response.status_code == 200
     assert response.json()["tag_id"] == tag_id
     assert response.json()["tag_name"] == "Repairs"
-    assert response.json()["channel"] == "webhook"
+    assert response.json()["channel"] == "telegram"
     assert response.json()["message_template"] == "Call update: {{summary}}"
-    assert response.json()["webhook_url"] == "https://example.ee/calls"
+    assert "webhook_url" not in response.json()
     assert response.json()["enabled"] is False
 
     foreign_tag_id = str(ObjectId())
@@ -668,3 +674,218 @@ async def test_rule_edit_updates_owned_tag_and_rejects_foreign_tag(harness):
     assert response.status_code == 404
     saved_rule = await db.action_rules.find_one({"_id": ObjectId(rule_id)})
     assert saved_rule["tag_id"] == tag_id
+
+
+@pytest.mark.asyncio
+async def test_action_rule_lifecycle_and_rejects_removed_channel_fields(harness):
+    db, client, token, organization_id, tag_id = harness
+    headers = {"Authorization": f"Bearer {token}"}
+    body = {"tag_id": tag_id, "message_template": "Received {{summary}}", "enabled": True}
+
+    created = await client.post("/api/rules", headers=headers, json=body)
+    assert created.status_code == 201
+    rule_id = created.json()["id"]
+    assert created.json()["organization_id"] == organization_id
+    assert created.json()["tag_name"] == "Water"
+    assert created.json()["channel"] == "telegram"
+
+    listed = await client.get("/api/rules", headers=headers)
+    assert {rule["id"] for rule in listed.json()} == {str(db.action_rules.rows[0]["_id"]), rule_id}
+
+    for obsolete_fields in (
+        {"channel": "sms"},
+        {"channel": "whatsapp"},
+        {"channel": "webhook", "webhook_url": "https://example.ee/hook"},
+    ):
+        rejected = await client.post("/api/rules", headers=headers, json={**body, **obsolete_fields})
+        assert rejected.status_code == 422
+
+    legacy_update = await client.patch(
+        f"/api/rules/{rule_id}",
+        headers=headers,
+        json={"channel": "sms", "enabled": False},
+    )
+    assert legacy_update.status_code == 422
+
+    updated = await client.patch(
+        f"/api/rules/{rule_id}",
+        headers=headers,
+        json={"message_template": "Updated: {{summary}}", "enabled": False},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["channel"] == "telegram"
+    assert updated.json()["message_template"] == "Updated: {{summary}}"
+    assert updated.json()["enabled"] is False
+    assert "webhook_url" not in updated.json()
+
+    deleted = await client.delete(f"/api/rules/{rule_id}", headers=headers)
+    assert deleted.status_code == 200
+    remaining = await client.get("/api/rules", headers=headers)
+    assert [rule["id"] for rule in remaining.json()] == [str(db.action_rules.rows[0]["_id"])]
+
+
+@pytest.mark.asyncio
+async def test_action_rules_are_isolated_by_organization(harness):
+    db, client, token, organization_id, tag_id = harness
+    headers = {"Authorization": f"Bearer {token}"}
+    foreign_rule_id = ObjectId()
+    await db.action_rules.insert_one({
+        "_id": foreign_rule_id,
+        "organization_id": str(ObjectId()),
+        "tag_id": tag_id,
+        "channel": "telegram",
+        "message_template": "Private rule",
+        "enabled": True,
+    })
+
+    listed = await client.get("/api/rules", headers=headers)
+    assert all(rule["organization_id"] == organization_id for rule in listed.json())
+    assert str(foreign_rule_id) not in {rule["id"] for rule in listed.json()}
+
+    updated = await client.patch(
+        f"/api/rules/{foreign_rule_id}",
+        headers=headers,
+        json={"enabled": False},
+    )
+    deleted = await client.delete(f"/api/rules/{foreign_rule_id}", headers=headers)
+    assert updated.status_code == 404
+    assert deleted.status_code == 404
+    assert (await db.action_rules.find_one({"_id": foreign_rule_id}))["enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_automatic_actions_only_send_to_matching_telegram_chats(harness, monkeypatch):
+    db, _, _, organization_id, tag_id = harness
+    from app import services
+
+    db.action_rules.rows.clear()
+    other_tag_id = str(ObjectId())
+    await db.action_rules.insert_one({
+        "organization_id": organization_id,
+        "tag_id": tag_id,
+        "channel": "telegram",
+        "message_template": "{{summary}} | {{transcript}} | {{phone}} | {{tag}}",
+        "enabled": True,
+    })
+    await db.action_rules.insert_one({
+        "organization_id": organization_id,
+        "tag_id": tag_id,
+        "channel": "telegram",
+        "message_template": "Disabled",
+        "enabled": False,
+    })
+    await db.action_rules.insert_one({
+        "organization_id": organization_id,
+        "tag_id": other_tag_id,
+        "channel": "telegram",
+        "message_template": "Wrong category",
+        "enabled": True,
+    })
+    await db.action_rules.insert_one({
+        "organization_id": organization_id,
+        "tag_id": tag_id,
+        "channel": "sms",
+        "message_template": "Obsolete channel",
+        "enabled": True,
+    })
+    sent = []
+
+    async def send_telegram(to, text):
+        sent.append((to, text))
+        return {"status": "sent", "provider_id": "telegram-provider"}
+
+    monkeypatch.setattr(services, "send_telegram", send_telegram)
+    message = {
+        "_id": ObjectId(),
+        "organization_id": organization_id,
+        "source": "telegram",
+        "tag_id": tag_id,
+        "tag_name": "Water",
+        "summary": "Leak reported",
+        "transcript": "There is water on the floor",
+        "confidence": 0.95,
+    }
+    await db.messages.insert_one(message)
+    call = {"caller_phone": "777", "source": "telegram"}
+
+    await services.run_actions(message, {"caller_phone": "+37255551234", "source": "phone"})
+    assert sent == []
+    assert db.action_runs.rows == []
+
+    await services.run_actions(message, call)
+
+    expected_text = "Leak reported | There is water on the floor | 777 | Water"
+    assert sent == [("777", expected_text)]
+    assert [run["channel"] for run in db.action_runs.rows] == ["telegram"]
+    assert all(run["status"] == "sent" for run in db.action_runs.rows)
+    stored_message = await db.messages.find_one({"_id": message["_id"]})
+    assert stored_message["auto_reply"]["text"] == expected_text
+
+
+@pytest.mark.asyncio
+async def test_telegram_manual_and_bulk_replies_reject_non_telegram_messages(harness, monkeypatch):
+    db, client, token, organization_id, _ = harness
+    from app import main
+
+    telegram_message_id = ObjectId()
+    phone_message_id = ObjectId()
+    await db.messages.insert_one({
+        "_id": telegram_message_id,
+        "organization_id": organization_id,
+        "source": "telegram",
+        "caller_phone": "777",
+        "summary": "Telegram report",
+    })
+    await db.messages.insert_one({
+        "_id": phone_message_id,
+        "organization_id": organization_id,
+        "source": "phone",
+        "caller_phone": "+37255551234",
+        "summary": "Phone report",
+    })
+    sent = []
+
+    async def send_telegram(to, text):
+        sent.append((to, text))
+        return {"status": "sent", "provider_id": "telegram-provider"}
+
+    monkeypatch.setattr(main, "send_telegram", send_telegram)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    rejected_manual = await client.post(
+        f"/api/messages/{phone_message_id}/reply",
+        headers=headers,
+        json={"text": "Cannot reply"},
+    )
+    assert rejected_manual.status_code == 409
+    rejected_channel = await client.post(
+        f"/api/messages/{telegram_message_id}/reply",
+        headers=headers,
+        json={"channel": "sms", "text": "Obsolete field"},
+    )
+    assert rejected_channel.status_code == 422
+    assert sent == []
+
+    manual = await client.post(
+        f"/api/messages/{telegram_message_id}/reply",
+        headers=headers,
+        json={"text": "Telegram response"},
+    )
+    assert manual.status_code == 200
+    assert sent == [("777", "Telegram response")]
+
+    mixed_bulk = await client.post(
+        "/api/messages/bulk-reply",
+        headers=headers,
+        json={"message_ids": [str(telegram_message_id), str(phone_message_id)], "text": "Bulk response"},
+    )
+    assert mixed_bulk.status_code == 409
+    assert sent == [("777", "Telegram response")]
+
+    bulk = await client.post(
+        "/api/messages/bulk-reply",
+        headers=headers,
+        json={"message_ids": [str(telegram_message_id)], "text": "Bulk response"},
+    )
+    assert bulk.status_code == 200
+    assert sent[-1] == ("777", "Bulk response")

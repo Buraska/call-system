@@ -5,8 +5,9 @@ import { Mic, X } from "lucide-react";
 import { api } from "../lib/api";
 
 type Message = { id: string };
+type AppLocale = "ru" | "en";
 
-export function SimulatedCallModal({ token, onClose, onCreated }: { token: string; onClose: () => void; onCreated: (message: Message) => void }) {
+export function SimulatedCallModal({ token, onClose, onCreated, locale = "ru" }: { token: string; onClose: () => void; onCreated: (message: Message) => void; locale?: AppLocale }) {
   const [callerPhone, setCallerPhone] = useState("");
   const [recording, setRecording] = useState(false);
   const [audio, setAudio] = useState<Blob | null>(null);
@@ -14,6 +15,17 @@ export function SimulatedCallModal({ token, onClose, onCreated }: { token: strin
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [audioUrl, setAudioUrl] = useState("");
+  const text = locale === "en" ? {
+    eyebrow: "CALL PROCESSING TEST", title: "Record an inquiry", close: "Close", callerPhone: "Caller phone number",
+    recording: "Recording", stop: "Stop", recordAgain: "Record again", start: "Start recording",
+    warning: "This test call is not a Telegram message and will not send an auto-reply. Replies are only sent to Telegram chats that submitted audio through the bot.",
+    cancel: "Cancel", processing: "Processing…", process: "Process as call", microphoneError: "Could not access the microphone",
+  } : {
+    eyebrow: "ТЕСТ ОБРАБОТКИ ЗВОНКА", title: "Записать обращение", close: "Закрыть", callerPhone: "Номер звонившего",
+    recording: "Идёт запись", stop: "Остановить", recordAgain: "Записать заново", start: "Начать запись",
+    warning: "Этот тестовый звонок не является сообщением из Telegram, автоответ не отправится. Ответы доступны только в Telegram-чат, из которого отправили аудио боту.",
+    cancel: "Отмена", processing: "Обработка…", process: "Обработать как звонок", microphoneError: "Не удалось получить доступ к микрофону",
+  };
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -67,7 +79,7 @@ export function SimulatedCallModal({ token, onClose, onCreated }: { token: strin
     } catch (err) {
       streamRef.current?.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
-      setError((err as Error).message || "Не удалось получить доступ к микрофону");
+      setError((err as Error).message || text.microphoneError);
     }
   }
 
@@ -95,14 +107,14 @@ export function SimulatedCallModal({ token, onClose, onCreated }: { token: strin
   }
 
   return <div className="modal-backdrop" onClick={onClose}><form className="simulated-call-modal" onSubmit={submit} onClick={(event) => event.stopPropagation()}>
-    <div className="modal-top"><div><span className="eyebrow">ТЕСТ ОБРАБОТКИ ЗВОНКА</span><h2>Записать обращение</h2></div><button type="button" className="icon-button" onClick={onClose} aria-label="Закрыть"><X size={18}/></button></div>
-    <label className="simulated-call-field">Номер звонившего<input required type="tel" value={callerPhone} onChange={(event) => setCallerPhone(event.target.value)} placeholder="+37255551234"/></label>
+    <div className="modal-top"><div><span className="eyebrow">{text.eyebrow}</span><h2>{text.title}</h2></div><button type="button" className="icon-button" onClick={onClose} aria-label={text.close}><X size={18}/></button></div>
+    <label className="simulated-call-field">{text.callerPhone}<input required type="tel" value={callerPhone} onChange={(event) => setCallerPhone(event.target.value)} placeholder="+37255551234"/></label>
     <div className="simulated-call-recorder">
-      {recording ? <><span className="recording-indicator"/><strong>Идёт запись · {Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, "0")}</strong><button type="button" className="secondary-button" onClick={stopRecording}>Остановить</button></> : <button type="button" className="primary-button" onClick={startRecording}><Mic size={15}/>{audio ? "Записать заново" : "Начать запись"}</button>}
+      {recording ? <><span className="recording-indicator"/><strong>{text.recording} · {Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, "0")}</strong><button type="button" className="secondary-button" onClick={stopRecording}>{text.stop}</button></> : <button type="button" className="primary-button" onClick={startRecording}><Mic size={15}/>{audio ? text.recordAgain : text.start}</button>}
       {audio && !recording && <audio className="simulated-call-preview" controls src={audioUrl}/>}
     </div>
-    <p className="simulated-call-warning">Запись будет обработана как входящий звонок. Включённые правила автоответа сработают и могут отправить реальное SMS или сообщение WhatsApp на указанный номер.</p>
+    <p className="simulated-call-warning">{text.warning}</p>
     {error && <div className="inline-error"><span>{error}</span></div>}
-    <div className="simulated-call-actions"><button type="button" className="secondary-button" onClick={onClose}>Отмена</button><button className="primary-button" disabled={!audio || recording || busy}>{busy ? "Обработка…" : "Обработать как звонок"}</button></div>
+    <div className="simulated-call-actions"><button type="button" className="secondary-button" onClick={onClose}>{text.cancel}</button><button className="primary-button" disabled={!audio || recording || busy}>{busy ? text.processing : text.process}</button></div>
   </form></div>;
 }

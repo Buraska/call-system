@@ -13,7 +13,6 @@ class Settings(BaseSettings):
     demo_mode: bool = True
     twilio_account_sid: str = ""
     twilio_auth_token: str = ""
-    twilio_phone_number: str = ""
     openai_api_key: str = ""
     openai_transcription_model: str = "whisper-1"
     openai_classification_model: str = "gpt-4o-mini"

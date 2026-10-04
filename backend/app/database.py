@@ -35,6 +35,11 @@ async def lifespan(_: FastAPI):
             {"$unset": {"telegram_chat_id": "", "telegram_username": "", "telegram_pairing_code": "", "telegram_pairing_expires_at": ""}},
         )
     await db.action_rules.update_many({"min_confidence": {"$exists": True}}, {"$unset": {"min_confidence": ""}})
+    await db.action_rules.update_many(
+        {"channel": {"$ne": "telegram"}},
+        {"$set": {"channel": "telegram", "enabled": False}},
+    )
+    await db.action_rules.update_many({}, {"$unset": {"webhook_url": ""}})
     await db.messages.create_index([("organization_id", ASCENDING), ("created_at", DESCENDING)])
     await db.calls.create_index("provider_call_id", unique=True, sparse=True)
     await db.notifications.create_index([("organization_id", ASCENDING), ("created_at", DESCENDING)])
