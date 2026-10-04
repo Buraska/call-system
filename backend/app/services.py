@@ -95,14 +95,14 @@ async def classify(text: str, tags: list[dict]) -> dict:
                 model=settings.openai_classification_model,
                 response_format={"type": "json_object"},
                 messages=[
-                    {"role": "system", "content": "Classify a short voice message for a property management team. Respond with JSON fields summary (one sentence in English), tag_id (the id of an existing category or null), new_tag_name (a short English name for a new category or null), confidence (0..1), and language (ru/en/et). Choose an existing category only when it is a strong match. Never create an action or reply."},
+                    {"role": "system", "content": "Classify a short voice message for a property management team. Respond with JSON fields summary (one sentence in English), tag_id (the id of a strongly matching existing category or null), new_tag_name (a short English category name using Latin letters for a new category or null), confidence (0..1), and language (ru/en/et). Never create an action or reply."},
                     {"role": "user", "content": json.dumps({"message": text, "categories": prompt_tags}, ensure_ascii=False)},
                 ],
                 temperature=0.1,
             )
             data = json.loads(response.choices[0].message.content or "{}")
             chosen = next((tag for tag in tags if str(tag["_id"]) == data.get("tag_id")), None)
-            new_name = re.sub(r"[^\wА-Яа-яЁёõäöüšž -]", "", str(data.get("new_tag_name") or ""))[:80].strip()
+            new_name = re.sub(r"[^A-Za-z0-9õäöüšžÕÄÖÜŠŽ -]", "", str(data.get("new_tag_name") or ""))[:80].strip()
             if chosen:
                 return {"summary": str(data.get("summary") or text[:120]), "tag_id": str(chosen["_id"]), "tag_name": chosen["name"], "tag_origin": "existing", "confidence": float(data.get("confidence", 0.5)), "language": data.get("language", "")}
             if not new_name:

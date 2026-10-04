@@ -202,6 +202,28 @@ async def test_fallback_classifier_matches_english_default_tag(monkeypatch):
     assert result["tag_name"] == "Water outage"
 
 @pytest.mark.asyncio
+async def test_classifier_falls_back_to_english_when_suggestion_is_not_latin(monkeypatch):
+    from app import services
+
+    monkeypatch.setattr(services.settings, "openai_api_key", "test-key")
+
+    class Completions:
+        async def create(self, **kwargs):
+            message = SimpleNamespace(content=json.dumps({"summary": "Loud noise", "tag_id": None, "new_tag_name": "Шум от соседей", "confidence": 0.8, "language": "ru"}))
+            return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+    class Client:
+        def __init__(self, api_key):
+            self.chat = SimpleNamespace(completions=Completions())
+
+    monkeypatch.setattr(services, "AsyncOpenAI", Client)
+
+    result = await services.classify("Соседи шумят", [])
+
+    assert result["tag_name"] == "New category"
+
+
+@pytest.mark.asyncio
 async def test_organization_confidence_threshold_gates_telegram_actions(harness):
     db, client, token, organization_id, tag_id = harness
     await db.action_rules.insert_one({"organization_id": organization_id, "tag_id": tag_id, "enabled": True, "channel": "telegram", "message_template": "A second action"})
