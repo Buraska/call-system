@@ -1,4 +1,4 @@
-# Kontuur MVP
+# Project for Hackathon 2026: "Kontuur"
 
 An app for handling calls forwarded when an employee is busy or unavailable. The phone provider records a voicemail; the server receives it, creates a transcript, selects an existing tag or suggests a new one, and runs only a preconfigured action.
 
